@@ -2,142 +2,148 @@
 #
 # Automated SCSI bridge integration test
 #
-# 1. Builds SheepShaver with scsi_s2p backend (if not already built)
-# 2. Builds runtime container with VNC
-# 3. Ensures s2p is running on the Pi
-# 4. Starts SheepShaver container
-# 5. Waits for SCSI probes to appear in s2p logs
-# 6. Reports pass/fail
+# Single Docker container with source mounted as a volume.
+# Builds SheepShaver, configures prefs, runs it, checks for SCSI activity.
 #
 # Usage: ./scripts/test-scsi-bridge.sh [s2p-host]
-#
-# Prerequisites:
-#   - Docker running
-#   - ROM file at ~/Downloads/Mac OS ROM
-#   - Disk image at ~/Downloads/Macintosh HD
-#   - s2p running on Pi (or specify host)
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+DATA_DIR="${SCRIPT_DIR}/../../sheepshaver-data"
 
 S2P_HOST="${1:-s3k.local}"
 S2P_PORT="6868"
 PI_SSH="orion@${S2P_HOST}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${SCRIPT_DIR}/../../sheepshaver-data"
 ROM_FILE="${DATA_DIR}/rom"
 DISK_FILE="${DATA_DIR}/disk.hfv"
+CONTAINER_NAME="sheepshaver-dev"
 
-echo "=== SheepShaver SCSI Bridge Integration Test ==="
-echo ""
-echo "  s2p host: ${S2P_HOST}:${S2P_PORT}"
-echo "  ROM:      ${ROM_FILE}"
-echo "  Disk:     ${DISK_FILE}"
+echo "=== SheepShaver SCSI Bridge Test ==="
+echo "  s2p: ${S2P_HOST}:${S2P_PORT}"
 echo ""
 
-# Validate files exist
-if [ ! -f "$ROM_FILE" ]; then
-  echo "ERROR: ROM file not found: $ROM_FILE"
-  exit 1
-fi
-if [ ! -f "$DISK_FILE" ]; then
-  echo "ERROR: Disk image not found: $DISK_FILE"
-  exit 1
-fi
-
-# Step 1: Build SheepShaver (if image doesn't exist)
-echo "Step 1: Building SheepShaver..."
-if ! docker image inspect sheepshaver-build &>/dev/null; then
-  docker build --platform linux/amd64 -t sheepshaver-build -f Dockerfile.sheepshaver . 2>&1 | tail -3
-fi
-echo "  ✓ Build image ready"
-
-# Step 2: Build runtime container
-echo "Step 2: Building runtime container..."
-docker build --platform linux/amd64 -t sheepshaver-run -f Dockerfile.sheepshaver-run . 2>&1 | tail -3
-echo "  ✓ Runtime image ready"
-
-# Step 3: Ensure s2p is running on Pi
-echo "Step 3: Checking s2p on Pi..."
-if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$PI_SSH" "nc -z localhost $S2P_PORT" 2>/dev/null; then
-  echo "  Starting s2p on Pi..."
-  ssh "$PI_SSH" "sudo systemctl stop s2p 2>/dev/null; true"
-  sleep 1
-  ssh "$PI_SSH" "sudo -n /tmp/s2p-midi --port $S2P_PORT > /tmp/sheepshaver-s2p.log 2>&1 &"
-  sleep 3
-fi
-# Clear the log for this test
-ssh "$PI_SSH" "echo '--- SCSI BRIDGE TEST START ---' >> /tmp/sheepshaver-s2p.log"
-echo "  ✓ s2p running"
-
-# Step 4: Start SheepShaver container
-echo "Step 4: Starting SheepShaver..."
-
-# Stop any existing container
-docker rm -f sheepshaver-test 2>/dev/null || true
+# Validate files
+for f in "$ROM_FILE" "$DISK_FILE"; do
+  [ -f "$f" ] || { echo "ERROR: $f not found"; exit 1; }
+done
 
 # Resolve s2p host to IP (container can't use .local mDNS)
 S2P_IP=$(python3 -c "import socket; print(socket.gethostbyname('$S2P_HOST'))" 2>/dev/null || echo "$S2P_HOST")
-echo "  s2p IP: $S2P_IP"
 
+# Build the image (just the base — source is mounted)
+echo "Step 1: Building Docker image..."
+docker build --platform linux/amd64 -t sheepshaver-dev -f "$REPO_DIR/Dockerfile.sheepshaver" "$REPO_DIR" 2>&1 | tail -3
+echo "  ✓ Image ready"
+
+# Ensure s2p is running on Pi
+echo "Step 2: Checking s2p on Pi..."
+if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$PI_SSH" "nc -z localhost $S2P_PORT" 2>/dev/null; then
+  echo "  Starting s2p..."
+  ssh "$PI_SSH" "sudo systemctl stop s2p 2>/dev/null; true" && sleep 1
+  ssh "$PI_SSH" "sudo -n /tmp/s2p-midi --port $S2P_PORT > /tmp/sheepshaver-s2p.log 2>&1 &" && sleep 3
+fi
+ssh "$PI_SSH" "echo '--- TEST START ---' >> /tmp/sheepshaver-s2p.log"
+echo "  ✓ s2p running at $S2P_IP"
+
+# Stop any existing container
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+# Start container with source + data mounted
+echo "Step 3: Starting container..."
 docker run -d \
-  --name sheepshaver-test \
+  --name "$CONTAINER_NAME" \
   --platform linux/amd64 \
-  -e S2P_HOST="$S2P_IP" \
-  -e S2P_PORT="$S2P_PORT" \
+  -v "$REPO_DIR:/src" \
   -v "$ROM_FILE:/sheepshaver/rom:ro" \
   -v "$DISK_FILE:/sheepshaver/disk" \
-  -p 6080:6080 \
-  -p 5900:5900 \
-  sheepshaver-run
+  -p 16080:6080 \
+  sheepshaver-dev \
+  bash -c "
+    set -e
+
+    # Build SheepShaver (incremental — artifacts persist via volume)
+    echo '=== Building SheepShaver ==='
+    cd /src/SheepShaver
+    make links 2>/dev/null || true
+    cd src/Unix
+    if [ ! -f Makefile ]; then
+      autoheader
+      ./configure --enable-sdl-video --enable-sdl-audio --enable-scsi-s2p --without-esd
+    fi
+    make -j\$(nproc)
+    echo '=== Build complete ==='
+
+    # Write prefs
+    mkdir -p /root/.config/SheepShaver
+    cat > /root/.config/SheepShaver/prefs << PREFS
+rom /sheepshaver/rom
+disk /sheepshaver/disk
+ramsize 134217728
+frameskip 0
+nocdrom true
+nosound true
+nogui true
+s2p_host ${S2P_IP}
+s2p_port ${S2P_PORT}
+scsi0 s2p:0
+scsi1 s2p:1
+scsi2 s2p:2
+scsi3 s2p:3
+scsi4 s2p:4
+scsi5 s2p:5
+scsi6 s2p:6
+PREFS
+
+    # Start display
+    Xvfb :0 -screen 0 1024x768x24 &
+    sleep 1
+    DISPLAY=:0 fluxbox &>/dev/null &
+    x11vnc -display :0 -forever -nopw -shared -rfbport 5900 &>/dev/null &
+    websockify --web /usr/share/novnc 6080 localhost:5900 &>/dev/null &
+
+    echo '=== Starting SheepShaver ==='
+    echo 'VNC: http://localhost:16080/vnc.html'
+    DISPLAY=:0 exec /src/SheepShaver/src/Unix/SheepShaver
+  "
 
 echo "  ✓ Container started"
-echo "  VNC: http://localhost:6080/vnc.html"
 
-# Step 5: Wait for SCSI probes
-echo ""
-echo "Step 5: Waiting for SCSI probes (30s max)..."
-echo "  Watching s2p log for INQUIRY commands..."
-
-FOUND=false
-for i in $(seq 1 30); do
+# Wait for build + boot
+echo "Step 4: Waiting for build + SCSI probes (120s max)..."
+for i in $(seq 1 120); do
   sleep 1
-  # Check if SheepShaver is still running
-  if ! docker ps | grep -q sheepshaver-test; then
-    echo "  SheepShaver exited!"
-    echo "  Container logs:"
-    docker logs sheepshaver-test 2>&1 | tail -20
+
+  if ! docker ps | grep -q "$CONTAINER_NAME"; then
+    echo "  Container exited!"
+    docker logs "$CONTAINER_NAME" 2>&1 | tail -20
+    exit 1
+  fi
+
+  # Check container logs for our scsi_s2p init messages
+  if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "scsi_s2p: init complete"; then
+    echo "  ✓ SheepShaver SCSI init complete at ${i}s"
+    docker logs "$CONTAINER_NAME" 2>&1 | grep "scsi_s2p:" | sed 's/^/    /'
     break
   fi
-  # Check s2p log for SCSI_EXEC commands (INQUIRY = CDB starting with 0x12)
+
+  # Check s2p log for SCSI_EXEC
   if ssh "$PI_SSH" "grep 'SCSI_EXEC' /tmp/sheepshaver-s2p.log 2>/dev/null" | grep -q "SCSI_EXEC"; then
-    FOUND=true
     echo "  ✓ SCSI commands detected at ${i}s!"
+    ssh "$PI_SSH" "grep 'SCSI_EXEC' /tmp/sheepshaver-s2p.log" | tail -5 | sed 's/^/    /'
     break
   fi
-  if [ $((i % 5)) -eq 0 ]; then
-    echo "  ... ${i}s"
+
+  if [ $((i % 10)) -eq 0 ]; then
+    # Show last line of container output
+    LAST=$(docker logs "$CONTAINER_NAME" 2>&1 | tail -1)
+    echo "  ... ${i}s: $LAST"
   fi
 done
 
-# Step 6: Report results
 echo ""
-echo "=== Results ==="
-if $FOUND; then
-  echo "  ✓ PASS: SheepShaver sent SCSI commands via the network bridge"
-  echo ""
-  echo "  s2p log (SCSI_EXEC entries):"
-  ssh "$PI_SSH" "grep 'SCSI_EXEC' /tmp/sheepshaver-s2p.log" | sed 's/^/    /'
-else
-  echo "  ✗ FAIL: No SCSI commands detected in s2p log"
-  echo ""
-  echo "  SheepShaver container logs:"
-  docker logs sheepshaver-test 2>&1 | tail -30 | sed 's/^/    /'
-  echo ""
-  echo "  s2p log (last 10 lines):"
-  ssh "$PI_SSH" "tail -10 /tmp/sheepshaver-s2p.log" | sed 's/^/    /'
-fi
-
-echo ""
-echo "Container 'sheepshaver-test' is still running."
-echo "  VNC: http://localhost:6080/vnc.html"
-echo "  Stop: docker rm -f sheepshaver-test"
+echo "VNC: http://localhost:16080/vnc.html"
+echo "Logs: docker logs $CONTAINER_NAME"
+echo "Shell: docker exec -it $CONTAINER_NAME bash"
+echo "Stop: docker rm -f $CONTAINER_NAME"

@@ -74,6 +74,8 @@ prefs_desc common_prefs_items[] = {
 	{"sound_buffer", TYPE_INT32, false,	"sound buffer length"},
 	{"name_encoding", TYPE_INT32, false,	"file name encoding"},
 	{"init_grab", TYPE_BOOLEAN, false,	"initially grabbing mouse"},
+	{"s2p_host", TYPE_STRING, false,    "scsi2pi host for network SCSI"},
+	{"s2p_port", TYPE_STRING, false,    "scsi2pi port for network SCSI"},
 	{NULL, TYPE_END, false, NULL} // End of list
 };
 

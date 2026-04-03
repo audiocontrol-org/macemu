@@ -149,7 +149,7 @@ static bool s2p_command(const std::vector<uint8> &payload,
 	int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 	if (sock < 0) {
 		freeaddrinfo(res);
-		D(bug("scsi_s2p: socket() failed: %s\n", strerror(errno)));
+		fprintf(stderr, "scsi_s2p: socket() failed: %s\n", strerror(errno));
 		return false;
 	}
 
@@ -161,7 +161,7 @@ static bool s2p_command(const std::vector<uint8> &payload,
 	if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
 		freeaddrinfo(res);
 		close(sock);
-		D(bug("scsi_s2p: connect to %s:%d failed: %s\n", s2p_host, s2p_port, strerror(errno)));
+		fprintf(stderr, "scsi_s2p: connect to %s:%d failed: %s\n", s2p_host, s2p_port, strerror(errno));
 		return false;
 	}
 	freeaddrinfo(res);
@@ -242,7 +242,7 @@ struct ScsiResult {
 
 static ScsiResult parse_scsi_result(const std::vector<uint8> &result_data)
 {
-	ScsiResult r = { false, -1, {}, {}, 0 };
+	ScsiResult r = { false, 0, {}, {}, 0 };
 
 	auto fields = pb_parse(result_data.data(), result_data.size());
 	for (auto &f : fields) {
@@ -291,7 +291,11 @@ void SCSIInit(void)
 	const char *port = PrefsFindString("s2p_port");
 	if (port) s2p_port = atoi(port);
 
-	D(bug("scsi_s2p: connecting to s2p at %s:%d\n", s2p_host, s2p_port));
+	fprintf(stderr, "scsi_s2p: connecting to s2p at %s:%d\n", s2p_host, s2p_port);
+	fflush(stderr);
+	// Also write to a file for debugging in Docker
+	FILE *logf = fopen("/tmp/scsi_s2p.log", "w");
+	if (logf) { fprintf(logf, "scsi_s2p: connecting to s2p at %s:%d\n", s2p_host, s2p_port); fflush(logf); fclose(logf); }
 
 	// Probe all 8 SCSI IDs to check which targets are present
 	for (int id = 0; id < 8; id++) {
@@ -301,14 +305,20 @@ void SCSIInit(void)
 		std::vector<uint8> result;
 		if (s2p_command(cmd, result)) {
 			auto r = parse_scsi_result(result);
+			fprintf(stderr, "scsi_s2p: target %d: ok=%d status=%d data_in=%zu\n", id, r.ok, r.status, r.data_in.size());
 			target_present[id] = r.ok && r.status == 0 && r.data_in.size() >= 5;
 			if (target_present[id]) {
-				D(bug("scsi_s2p: target %d present (type %d)\n", id, r.data_in[0] & 0x1F));
+				fprintf(stderr, "scsi_s2p: target %d present (type %d)\n", id, r.data_in[0] & 0x1F);
 			}
 		} else {
 			target_present[id] = false;
+			fprintf(stderr, "scsi_s2p: target %d probe: s2p_command returned false\n", id);
 		}
 	}
+
+	int count = 0;
+	for (int id = 0; id < 8; id++) if (target_present[id]) count++;
+	fprintf(stderr, "scsi_s2p: init complete, %d target(s) found\n", count);
 
 	SCSIReset();
 }

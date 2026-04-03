@@ -788,6 +788,7 @@ static void gui_activate (GtkApplication *app)
 
 int main(int argc, char **argv)
 {
+	fprintf(stderr, "DEBUG: main() entered\n"); fflush(stderr);
 #ifdef ENABLE_GTK3
 	GtkApplication *app = NULL;
 	int ret;
@@ -821,8 +822,12 @@ int main(int argc, char **argv)
 	
 #ifdef USE_SDL
 	// Initialize SDL system
-	if (!init_sdl())
+	fprintf(stderr, "DEBUG: calling init_sdl()...\n"); fflush(stderr);
+	if (!init_sdl()) {
+		fprintf(stderr, "DEBUG: init_sdl() FAILED\n"); fflush(stderr);
 		goto quit;
+	}
+	fprintf(stderr, "DEBUG: SDL init OK\n"); fflush(stderr);
 #if SDL_VERSION_ATLEAST(2,0,0)
 	if (valid_vmdir(sdl_vmdir.c_str())) {
 		vmdir = sdl_vmdir.c_str();
@@ -973,7 +978,8 @@ int main(int argc, char **argv)
 	SysInit();
 
 #ifdef ENABLE_GTK3
-	if (!gui_connection) {
+	gtk_init(&argc, &argv);
+	if (!gui_connection && use_gui) {
 		// Init GTK
 		app = gtk_application_new (GetString(STR_APP_ID), G_APPLICATION_FLAGS_NONE);
 		g_set_prgname (GetString(STR_APP_DISPLAY_NAME));
@@ -996,6 +1002,7 @@ int main(int argc, char **argv)
 	paranoia_check();
 #endif
 
+	fprintf(stderr, "DEBUG: past GTK, opening /dev/zero\n"); fflush(stderr);
 	// Open /dev/zero
 	zero_fd = open("/dev/zero", O_RDWR);
 	if (zero_fd < 0) {
@@ -1142,12 +1149,19 @@ int main(int argc, char **argv)
 	}
 	
 	// Load Mac ROM
-	if (!load_mac_rom())
+	fprintf(stderr, "DEBUG: loading ROM...\n"); fflush(stderr);
+	if (!load_mac_rom()) {
+		fprintf(stderr, "DEBUG: ROM load FAILED\n"); fflush(stderr);
 		goto quit;
+	}
+	fprintf(stderr, "DEBUG: ROM loaded OK, calling InitAll...\n"); fflush(stderr);
 
 	// Initialize everything
-	if (!InitAll(vmdir))
+	if (!InitAll(vmdir)) {
+		fprintf(stderr, "DEBUG: InitAll FAILED\n"); fflush(stderr);
 		goto quit;
+	}
+	fprintf(stderr, "DEBUG: InitAll complete\n"); fflush(stderr);
 	D(bug("Initialization complete\n"));
 
 	// Clear caches (as we loaded and patched code) and write protect ROM

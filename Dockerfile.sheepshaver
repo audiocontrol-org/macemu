@@ -4,13 +4,12 @@ RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
       g++ make pkg-config autoconf \
       libsdl2-dev libgtk-3-dev \
+      xvfb x11vnc fluxbox novnc websockify \
+      curl net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY . /src
 
-RUN cd /src/SheepShaver && make links && \
-    cd src/Unix && \
-    autoheader && \
-    ./configure --enable-sdl-video --enable-sdl-audio --enable-scsi-s2p --without-esd && \
-    make -j$(nproc)
+EXPOSE 6080
+
+CMD ["bash"]

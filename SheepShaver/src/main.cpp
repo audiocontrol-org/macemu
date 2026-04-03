@@ -127,10 +127,12 @@ bool InitAll(const char *vmdir)
 		return false;
 
 	// Init drivers
+	fprintf(stderr, "DEBUG: about to call SCSIInit\n"); fflush(stderr);
 	SonyInit();
 	DiskInit();
 	CDROMInit();
 	SCSIInit();
+	fprintf(stderr, "DEBUG: SCSIInit returned\n"); fflush(stderr);
 
 	// Init external file system
 	ExtFSInit(); 
