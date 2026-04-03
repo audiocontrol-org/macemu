@@ -85,6 +85,7 @@ frameskip 0
 nocdrom true
 nosound true
 nogui true
+extfs /sheepshaver/shared
 s2p_host ${S2P_IP}
 s2p_port ${S2P_PORT}
 scsi0 s2p:0
@@ -102,6 +103,9 @@ PREFS
     DISPLAY=:0 fluxbox &>/dev/null &
     x11vnc -display :0 -forever -nopw -shared -rfbport 5900 &>/dev/null &
     websockify --web /usr/share/novnc 6080 localhost:5900 &>/dev/null &
+
+    # Auto-dismiss Disk First Aid dialog after boot
+    (sleep 20 && DISPLAY=:0 xdotool key Return) &
 
     echo '=== Starting SheepShaver ==='
     echo 'VNC: http://localhost:16080/vnc.html'

@@ -489,6 +489,9 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			if (ReadMacInt32(0x14c) == 0)
 				idle_wait();
 			r->a[0] = ReadMacInt32(0x2b6);
+			// Check for automation commands from host
+			extern void ScriptHookIdle();
+			ScriptHookIdle();
 			break;
 
 		case OP_IDLE_TIME_2:
