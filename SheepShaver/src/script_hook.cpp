@@ -31,9 +31,11 @@
 #include <unistd.h>
 
 #include "cpu_emulation.h"
+#include "emul_op.h"
 #include "main.h"
 #include "macos_util.h"
 #include "prefs.h"
+#include "thunks.h"
 
 // Check interval: only check every N idle cycles to avoid overhead
 static int idle_counter = 0;
@@ -143,13 +145,58 @@ static void process_command_file()
 			write_file(resultpath, "PONG - SheepShaver automation hook is active\n");
 			hook_log("PONG sent");
 		}
-		else if (strncmp(line, "FINDER_OPEN ", 12) == 0) {
-			// Open a file using the Finder
-			// This constructs an 'odoc' Apple Event to the Finder process
-			const char *filename = line + 12;
-			hook_log("FINDER_OPEN: %s (not yet implemented)", filename);
-			// TODO: construct AESend('MACS', 'aevt', 'odoc', ...)
-			write_file(resultpath, "FINDER_OPEN: not yet implemented\n");
+		else if (strncmp(line, "KEY ", 4) == 0) {
+			// Send a keypress via xdotool (safe — doesn't touch Mac internals)
+			const char *key = line + 4;
+			char cmd[512];
+			snprintf(cmd, sizeof(cmd), "DISPLAY=:0 xdotool key %s", key);
+			int ret = system(cmd);
+			hook_log("KEY %s → %d", key, ret);
+		}
+		else if (strncmp(line, "CLICK ", 6) == 0) {
+			// Send a mouse click via xdotool
+			int x = 0, y = 0;
+			sscanf(line + 6, "%d %d", &x, &y);
+			char cmd[512];
+			snprintf(cmd, sizeof(cmd), "DISPLAY=:0 xdotool mousemove %d %d click 1", x, y);
+			int ret = system(cmd);
+			hook_log("CLICK %d %d → %d", x, y, ret);
+		}
+		else if (strncmp(line, "DOUBLECLICK ", 12) == 0) {
+			int x = 0, y = 0;
+			sscanf(line + 12, "%d %d", &x, &y);
+			char cmd[512];
+			snprintf(cmd, sizeof(cmd), "DISPLAY=:0 xdotool mousemove %d %d click --repeat 2 --delay 200 1", x, y);
+			int ret = system(cmd);
+			hook_log("DOUBLECLICK %d %d → %d", x, y, ret);
+		}
+		else if (strncmp(line, "TYPE ", 5) == 0) {
+			const char *text = line + 5;
+			char cmd[1024];
+			snprintf(cmd, sizeof(cmd), "DISPLAY=:0 xdotool type --delay 50 '%s'", text);
+			int ret = system(cmd);
+			hook_log("TYPE '%s' → %d", text, ret);
+		}
+		else if (strncmp(line, "SCREENSHOT ", 11) == 0) {
+			const char *name = line + 11;
+			char cmd[512];
+			snprintf(cmd, sizeof(cmd), "DISPLAY=:0 scrot /sheepshaver/shared/%s.png", name);
+			int ret = system(cmd);
+			hook_log("SCREENSHOT %s → %d", name, ret);
+		}
+		else if (strncmp(line, "SLEEP ", 6) == 0) {
+			int secs = atoi(line + 6);
+			hook_log("SLEEP %d", secs);
+			sleep(secs);
+		}
+		else if (strncmp(line, "RUN_SCRIPT", 10) == 0) {
+			// Run an AppleScript via Script Editor:
+			// 1. Write the script to the Unix volume
+			// 2. Open it with Script Editor (Cmd+O + navigate)
+			// 3. Run it (Cmd+R)
+			// This is done in multiple command.txt cycles — not in one shot
+			hook_log("RUN_SCRIPT: use the KEY/CLICK commands to drive Script Editor");
+			write_file(resultpath, "RUN_SCRIPT: use KEY/CLICK/TYPE to drive Script Editor\n");
 		}
 		else {
 			hook_log("Unknown command: %s", line);
