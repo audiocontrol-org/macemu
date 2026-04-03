@@ -45,6 +45,7 @@ AC_ARG_WITH(gtk,            [  --with-gtk              use GTK 2 or 3 for user i
    *)      	 WANT_GTK="no";;
    esac],
   [WANT_GTK="any"])
+AC_ARG_ENABLE(scsi-s2p,     [  --enable-scsi-s2p       use scsi2pi network SCSI backend [default=no]], [WANT_SCSI_S2P=$enableval], [WANT_SCSI_S2P=no])
 AC_ARG_WITH(mon,            [  --with-mon              use mon as debugger [default=yes]], [WANT_MON=$withval], [WANT_MON=no])
 AC_ARG_WITH(dgcc,           [  --with-dgcc=COMPILER    use C++ COMPILER to compile synthetic opcodes or 'precompiled'], [DYNGEN_CC=$withval], [DYNGEN_CC=precompiled])
 
@@ -816,6 +817,12 @@ if [[ "x$have_libvhd" = "xyes" ]]; then
   EXTRASYSSRCS="$EXTRASYSSRCS vhd_unix.cpp"
 fi
 
+
+dnl Override SCSI backend if --enable-scsi-s2p was specified
+if [[ "x$WANT_SCSI_S2P" = "xyes" ]]; then
+  SCSISRC=scsi_s2p.cpp
+  AC_MSG_NOTICE([Using scsi2pi network SCSI backend])
+fi
 
 SYSSRCS="$VIDEOSRCS $EXTFSSRC $PREFSSRC $SERIALSRC $ETHERSRC $SCSISRC $AUDIOSRC $SEMSRC $UISRCS $EXTRASYSSRCS"
 
