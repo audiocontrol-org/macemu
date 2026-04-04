@@ -1174,6 +1174,43 @@ void sheepshaver_cpu::execute_native_op(uint32 selector)
 		gpr(3) = (uint32)result;
 		break;
 	}
+	case NATIVE_CONTROL_DISPATCH: {
+		// Called from patched PPC _Control dispatch in ROM.
+		// r3 = handler addr from trap table, r6 = PB ptr
+		uint32 handler_addr = gpr(3);
+		uint32 pb = gpr(6);
+
+		// If handler is a 68k address (Plug), call via Execute68k.
+		// If handler is PPC (original), call the original Mixed Mode
+		// dispatcher that we replaced. We saved the original bl target
+		// in r7 (set up by our ROM patch).
+		if (handler_addr > 0x10100000 && handler_addr < 0x11000000) {
+			static int log_count = 0;
+			if (log_count < 20) {
+				fprintf(stderr, "NATIVE_CONTROL_DISPATCH(68k): handler=0x%08x pb=0x%08x ioRefNum=%d\n",
+					handler_addr, pb, (int16)ReadMacInt16(pb + 24));
+				fflush(stderr);
+				log_count++;
+			}
+			M68kRegisters r;
+			r.a[0] = pb;
+			Execute68k(handler_addr, &r);
+			gpr(3) = r.d[0];
+		} else {
+			// PPC handler: call the original Mixed Mode function.
+			// We saved the target in r7 from the ROM patch.
+			// Just branch to it by setting the return value and
+			// letting the caller continue with the original code.
+			//
+			// Actually: we need to NOT intercept this case at all.
+			// The cleanest fix: only patch the ROM bl when the trap
+			// table has a 68k handler. Check at idle time and patch/unpatch.
+			// For now, return -1 (controlErr) so the caller retries
+			// through another path.
+			gpr(3) = (uint32)(int32)-1; // controlErr
+		}
+		break;
+	}
 	default:
 		printf("FATAL: NATIVE_OP called with bogus selector %d\n", selector);
 		QuitEmulator();

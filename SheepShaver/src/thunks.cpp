@@ -97,6 +97,7 @@ uint32 NativeOpcode(int selector)
 	case NATIVE_GET_1_NAMED_RESOURCE:
   	case NATIVE_MAKE_EXECUTABLE:
 	case NATIVE_SCSI_ACTION:
+	case NATIVE_CONTROL_DISPATCH:
 		opcode = POWERPC_NATIVE_OP(1, selector);
 		break;
 	default:

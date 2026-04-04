@@ -2112,16 +2112,28 @@ static bool patch_68k(void)
 		fprintf(stderr, "Patched %d PPC SCSIAction thunks\n", patched);
 		fflush(stderr);
 
-		// Patch PPC _Control dispatch to log calls.
-		// The ROM at 0x140EFC (and 0x140F48, 0x140F94) does:
-		//   lwz r4, 0x0410(r0)  — load _Control handler from trap table
-		// We replace this with a load of a known value so we can trace it.
+		// Patch PPC _Control dispatch to log calls and properly route
+		// through 68k trap handlers.
 		// Pattern: 7c0802a6 80800410 (mfspr r0,LR; lwz r4,0x410(r0))
+		// Found at ROM 0x140EF8, 0x140F44, 0x140F90
+		//
+		// The function receives PB in r3, loads the 68k _Control handler
+		// from the trap table into r4, then calls Mixed Mode dispatch.
+		// On SheepShaver, Mixed Mode doesn't properly call the 68k handler.
+		//
+		// Fix: Add a NATIVE_OP after the lwz that logs the call.
+		// The lwz r4,0x0410(r0) is at pattern_offset + 4.
+		// We insert NativeOpcode after it to log r3 (PB) and r4 (handler).
+		// PPC _Control dispatch sites found at ROM 0x140EF8, 0x140F44, 0x140F90.
+		// These load the 68k handler from the trap table and call it via Mixed Mode.
+		// On SheepShaver, Mixed Mode fails for 68k handlers installed by the SCSI Plug.
+		// TODO: Fix Mixed Mode dispatch for these sites.
+		// For now, just log the sites (no patching — patching breaks boot).
 		static const uint8 control_dispatch_pattern[] = {0x7c, 0x08, 0x02, 0xa6, 0x80, 0x80, 0x04, 0x10};
 		loc = 0x140000;
 		patched = 0;
 		while ((loc = find_rom_data(loc, 0x150000, control_dispatch_pattern, sizeof(control_dispatch_pattern))) != 0) {
-			fprintf(stderr, "PPC _Control dispatch at ROM 0x%06x\n", loc);
+			fprintf(stderr, "PPC _Control dispatch at ROM 0x%06x (not patched)\n", loc);
 			patched++;
 			loc += 4;
 		}
