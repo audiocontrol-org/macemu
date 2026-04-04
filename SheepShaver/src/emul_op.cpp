@@ -754,15 +754,47 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			WriteMacInt16(r->a[7] + 20, ExtFSHFS(ReadMacInt32(r->a[7] + 16), ReadMacInt16(r->a[7] + 14), ReadMacInt32(r->a[7] + 10), ReadMacInt32(r->a[7] + 6), ReadMacInt16(r->a[7] + 4)));
 			break;
 
-		case OP_IDLE_TIME:
+		case OP_IDLE_TIME: {
 			// Sleep if no events pending
 			if (ReadMacInt32(0x14c) == 0)
 				idle_wait();
 			r->a[0] = ReadMacInt32(0x2b6);
+
+			// Guard: protect the SCSI Plug's _Control trap patch.
+			// Another extension overwrites _Control after the Plug installs it.
+			// We detect the Plug's handler by checking if _Read points to Plug code
+			// (0x1014xxxx range), then ensure _Control points to Plug+0x0E20.
+			{
+				static uint32 plug_control_addr = 0;
+				static int guard_log_count = 0;
+				uint32 read_handler = ReadMacInt32(0x0400 + 0x02 * 4);
+				// Detect Plug by checking _Read handler is in extension memory
+				if (read_handler > 0x10000000 && read_handler < 0x11000000 && !plug_control_addr) {
+					// First detection: compute expected _Control from _Read
+					// _Read is at Plug+0x0D60, _Control is at Plug+0x0E20
+					// Plug base = _Read - 0x0D60
+					uint32 plug_base = read_handler - 0x0D60;
+					plug_control_addr = plug_base + 0x0E20;
+				}
+				if (plug_control_addr) {
+					uint32 current_control = ReadMacInt32(0x0400 + 0x04 * 4);
+					if (current_control != plug_control_addr) {
+						WriteMacInt32(0x0400 + 0x04 * 4, plug_control_addr);
+						if (guard_log_count < 5) {
+							fprintf(stderr, "GUARD: _Control was 0x%08x, restored to Plug 0x%08x\n",
+								current_control, plug_control_addr);
+							fflush(stderr);
+							guard_log_count++;
+						}
+					}
+				}
+			}
+
 			// Check for automation commands from host
 			extern void ScriptHookIdle();
 			ScriptHookIdle();
 			break;
+		}
 
 		case OP_IDLE_TIME_2:
 			// Sleep if no events pending

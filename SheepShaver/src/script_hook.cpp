@@ -265,6 +265,47 @@ void ScriptHookIdle()
 						read_handler, write_handler, control_handler, status_handler);
 					fprintf(stderr, "  Expected Plug handlers: _Read=0x%08x _Write=0x%08x _Control=0x%08x _Status=0x%08x\n",
 						plug_base + 0x0D60, plug_base + 0x0D94, plug_base + 0x0E20, plug_base + 0x0DC8);
+					// Identify what overwrote _Control by dumping memory around the handler
+					if (control_handler != plug_base + 0x0E20) {
+						fprintf(stderr, "  Conflicting _Control at 0x%08x — dumping 256 bytes before:\n", control_handler);
+						// Search backward for ASCII strings (extension name)
+						for (uint32 si = control_handler - 256; si < control_handler; si++) {
+							uint8 c = ReadMacInt8(si);
+							if (c >= 0x20 && c < 0x7F) {
+								// Found printable char, read string
+								char str[64] = {};
+								int slen = 0;
+								while (slen < 63) {
+									uint8 cc = ReadMacInt8(si + slen);
+									if (cc < 0x20 || cc >= 0x7F) break;
+									str[slen++] = cc;
+								}
+								if (slen >= 4) {
+									fprintf(stderr, "    String at 0x%08x: \"%s\"\n", si, str);
+									si += slen - 1;
+								}
+							}
+						}
+						fflush(stderr);
+					}
+
+					// Re-install any Plug trap patches that were overwritten by later extensions
+					uint32 patch_pairs[][2] = {
+						{0x02, 0x0D60},  // _Read
+						{0x03, 0x0D94},  // _Write
+						{0x04, 0x0E20},  // _Control
+						{0x05, 0x0DC8},  // _Status
+					};
+					const char *patch_names[] = {"_Read", "_Write", "_Control", "_Status"};
+					for (int pi = 0; pi < 4; pi++) {
+						uint32 expected = plug_base + patch_pairs[pi][1];
+						uint32 actual = ReadMacInt32(0x0400 + patch_pairs[pi][0] * 4);
+						if (actual != expected) {
+							fprintf(stderr, "  FIXING %s: was 0x%08x, restoring Plug handler 0x%08x\n",
+								patch_names[pi], actual, expected);
+							WriteMacInt32(0x0400 + patch_pairs[pi][0] * 4, expected);
+						}
+					}
 					fflush(stderr);
 					hook_log("SCSI Plug base at 0x%08x", plug_base);
 
