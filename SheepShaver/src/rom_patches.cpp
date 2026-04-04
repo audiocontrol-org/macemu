@@ -36,6 +36,7 @@
 #include "sony.h"
 #include "disk.h"
 #include "cdrom.h"
+#include "scsi_bridge.h"
 #include "audio.h"
 #include "audio_defs.h"
 #include "serial.h"
@@ -482,6 +483,54 @@ static const uint8 cdrom_driver[] = {	// CD-ROM driver
 
 	// Status()
 	M68K_EMUL_OP_CDROM_STATUS >> 8, M68K_EMUL_OP_CDROM_STATUS & 0xff,
+
+	// IOReturn
+	0x32, 0x28, 0x00, 0x06,				//  move.w	6(a0),d1
+	0x08, 0x01, 0x00, 0x09,				//  btst		#9,d1
+	0x67, 0x0c,							//  beq		1
+	0x4a, 0x40,							//  tst.w	d0
+	0x6f, 0x02,							//  ble		2
+	0x42, 0x40,							//  clr.w	d0
+	0x31, 0x40, 0x00, 0x10,				//2 move.w	d0,$10(a0)
+	0x4e, 0x75,							//  rts
+	0x4a, 0x40,							//1 tst.w	d0
+	0x6f, 0x04,							//  ble		3
+	0x42, 0x40,							//  clr.w	d0
+	0x4e, 0x75,							//  rts
+	0x2f, 0x38, 0x08, 0xfc,				//3 move.l	$8fc,-(sp)
+	0x4e, 0x75,							//  rts
+
+	// Close()
+	0x70, 0xe8,							//  moveq	#-24,d0
+	0x4e, 0x75							//  rts
+};
+
+static const uint8 scsi_bridge_driver[] = {	// SCSI bridge driver
+	// Driver header
+	0x6f, 0x00, 0, 0, 0, 0, 0, 0,
+	0x00, 0x18,							// Open() offset
+	0x00, 0x1c,							// Prime() offset
+	0x00, 0x20,							// Control() offset
+	0x00, 0x2c,							// Status() offset
+	0x00, 0x52,							// Close() offset
+	0x05, 0x2e, 0x53, 0x43, 0x53, 0x49,	// ".SCSI"
+
+	// Open()
+	M68K_EMUL_OP_SCSI_BRIDGE_OPEN >> 8, M68K_EMUL_OP_SCSI_BRIDGE_OPEN & 0xff,
+	0x4e, 0x75,							//  rts
+
+	// Prime()
+	M68K_EMUL_OP_SCSI_BRIDGE_PRIME >> 8, M68K_EMUL_OP_SCSI_BRIDGE_PRIME & 0xff,
+	0x60, 0x0e,							//  bra		IOReturn
+
+	// Control()
+	M68K_EMUL_OP_SCSI_BRIDGE_CONTROL >> 8, M68K_EMUL_OP_SCSI_BRIDGE_CONTROL & 0xff,
+	0x0c, 0x68, 0x00, 0x01, 0x00, 0x1a,	//  cmp.w	#1,$1a(a0)
+	0x66, 0x04,							//  bne		IOReturn
+	0x4e, 0x75,							//  rts
+
+	// Status()
+	M68K_EMUL_OP_SCSI_BRIDGE_STATUS >> 8, M68K_EMUL_OP_SCSI_BRIDGE_STATUS & 0xff,
 
 	// IOReturn
 	0x32, 0x28, 0x00, 0x06,				//  move.w	6(a0),d1
@@ -2224,6 +2273,9 @@ static bool patch_68k(void)
 	gen_bin_driver( ROMBase + sony_offset + 0x500);
 	gen_bout_driver(ROMBase + sony_offset + 0x600);
 
+	// Install .SCSI bridge driver
+	memcpy((void *)(ROMBaseHost + sony_offset + 0x700), scsi_bridge_driver, sizeof(scsi_bridge_driver));
+
 	// Copy icons to ROM
 	SonyDiskIconAddr = ROMBase + sony_offset + 0x800;
 	memcpy(ROMBaseHost + sony_offset + 0x800, SonyDiskIcon, sizeof(SonyDiskIcon));
@@ -2613,6 +2665,22 @@ void InstallDrivers(void)
 		r.a[0] = pb;
 		Execute68kTrap(0xa000, &r);		// Open()
 	}
+
+	// Install SCSI bridge driver
+	r.a[0] = ROMBase + sony_offset + 0x700;
+	r.d[0] = (uint32)SCSIBridgeRefNum;
+	Execute68kTrap(0xa43d, &r);		// DrvrInstallRsrvMem()
+	r.a[0] = ReadMacInt32(ReadMacInt32(0x11c) + ~SCSIBridgeRefNum * 4);	// Get driver handle from Unit Table
+	Execute68kTrap(0xa029, &r);		// HLock()
+	dce = ReadMacInt32(r.a[0]);
+	WriteMacInt32(dce + dCtlDriver, ROMBase + sony_offset + 0x700);
+	WriteMacInt16(dce + dCtlFlags, SCSIBridgeDriverFlags);
+
+	// Open SCSI bridge driver
+	SheepString scsi_bridge_str("\005.SCSI");
+	WriteMacInt32(pb + ioNamePtr, scsi_bridge_str.addr());
+	r.a[0] = pb;
+	Execute68kTrap(0xa000, &r);		// Open()
 
 	// Install serial drivers
 	r.a[0] = ROMBase + sony_offset + 0x300;

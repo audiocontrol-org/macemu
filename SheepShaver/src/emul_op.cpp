@@ -33,6 +33,7 @@
 #include "disk.h"
 #include "cdrom.h"
 #include "scsi.h"
+#include "scsi_bridge.h"
 #include "video.h"
 #include "audio.h"
 #include "ether.h"
@@ -807,6 +808,19 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			fprintf(stderr, "PLUG_TRACE pc=0x%08x d0=0x%08x d7=0x%08x a0=0x%08x a4=0x%08x\n",
 				pc, r->d[0], r->d[7], r->a[0], r->a[4]);
 			fflush(stderr);
+			break;
+
+		case OP_SCSI_BRIDGE_OPEN:		// SCSI bridge driver functions
+			r->d[0] = SCSIBridgeOpen(r->a[0], r->a[1]);
+			break;
+		case OP_SCSI_BRIDGE_PRIME:
+			r->d[0] = SCSIBridgePrime(r->a[0], r->a[1]);
+			break;
+		case OP_SCSI_BRIDGE_CONTROL:
+			r->d[0] = SCSIBridgeControl(r->a[0], r->a[1]);
+			break;
+		case OP_SCSI_BRIDGE_STATUS:
+			r->d[0] = SCSIBridgeStatus(r->a[0], r->a[1]);
 			break;
 
 		default:
