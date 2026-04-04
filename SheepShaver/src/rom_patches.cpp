@@ -2044,6 +2044,16 @@ static bool patch_68k(void)
 	*wp = htons(M68K_EMUL_OP_NAME_REGISTRY);
 
 #if DISABLE_SCSI
+	// Patch ROM+0x12 so MESA II's SCSI Plug passes its ROM version check.
+	// The Plug checks this word against 0x2AF2 to identify Macs with SCSI hardware.
+	{
+		uint16 *rp = (uint16 *)(ROMBaseHost + 0x12);
+		uint16 old_val = ntohs(*rp);
+		*rp = htons(0x2AF2);
+		fprintf(stderr, "Patched ROM+0x12: 0x%04x -> 0x%04x (SCSI Plug ROM check)\n", old_val, ntohs(*rp));
+		fflush(stderr);
+	}
+
 	// Fake SCSI Manager
 	// Remove this if SCSI Manager works!!
 	static const uint8 scsi_mgr_a_dat[] = {0x4e, 0x56, 0x00, 0x00, 0x20, 0x3c, 0x00, 0x00, 0x04, 0x0c, 0xa7, 0x1e};
@@ -2385,6 +2395,34 @@ void InstallDrivers(void)
 	uint32 scsi_globals = r.a[0];
 	D(bug("Fake SCSI globals at %08lx\n", scsi_globals));
 	WriteMacInt32(0xc0c, scsi_globals);	// Set SCSIGlobals
+
+	// Register Gestalt('scsi') so MESA II's SCSI Plug can detect SCSI Manager 4.3.
+	// Without this, Gestalt('scsi') returns gestaltUndefSelectorErr and MESA skips
+	// all SCSI operations.
+	{
+		uint32 gestalt_func = scsi_globals + 0xF00;
+		WriteMacInt16(gestalt_func,     0x207C);  // movea.l #imm,a0
+		WriteMacInt32(gestalt_func + 2, 0x000F);  // gestaltAsyncSCSI | gestaltAsyncSCSIINROM | etc.
+		WriteMacInt16(gestalt_func + 6, 0x7000);  // moveq #0,d0
+		WriteMacInt16(gestalt_func + 8, 0x4E75);  // rts
+
+		r.d[0] = 0x73637369;  // 'scsi'
+		r.a[0] = gestalt_func;
+		Execute68kTrap(0xa3ad, &r);  // _NewGestalt
+		fprintf(stderr, "NewGestalt('scsi') -> %d (func at 0x%08x)\n", (int32)r.d[0], gestalt_func);
+		fflush(stderr);
+		if ((int32)r.d[0] != 0) {
+			r.d[0] = 0x73637369;  // 'scsi'
+			r.a[0] = gestalt_func;
+			Execute68kTrap(0xa5ad, &r);  // _ReplaceGestalt
+			fprintf(stderr, "ReplaceGestalt('scsi') -> %d\n", (int32)r.d[0]);
+			fflush(stderr);
+		}
+	}
+
+	// NOTE: Gestalt('mach') replacement must happen AFTER boot completes
+	// (Mac OS 9 checks machine type during boot and rejects mismatched disks).
+	// It's done in ScriptHookIdle() instead.
 #endif
 
 	// Install floppy driver
