@@ -356,7 +356,8 @@ bool scsi_set_target(int id, int lun)
 }
 
 bool scsi_send_cmd(size_t data_length, bool reading, int sg_size,
-                   uint8 **sg_ptr, uint32 *sg_len, uint16 *stat, uint32 timeout)
+                   uint8 **sg_ptr, uint32 *sg_len, uint16 *stat, uint32 timeout,
+                   size_t *actual_transferred)
 {
 	if (current_target_id < 0) return false;
 
@@ -446,6 +447,13 @@ bool scsi_send_cmd(size_t data_length, bool reading, int sg_size,
 			src += chunk;
 			remaining -= chunk;
 		}
+	}
+
+	if (actual_transferred) {
+		if (reading)
+			*actual_transferred = r.data_in.size();
+		else
+			*actual_transferred = data_length; // writes: assume all sent
 	}
 
 	// Cache sense data if CHECK CONDITION

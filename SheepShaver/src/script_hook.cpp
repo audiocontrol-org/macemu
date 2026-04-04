@@ -189,26 +189,17 @@ static void process_command_file()
 			hook_log("SLEEP %d", secs);
 			sleep(secs);
 		}
-		else if (strncmp(line, "SHUTDOWN", 8) == 0) {
-			hook_log("SHUTDOWN: initiating Mac OS shutdown");
-			M68kRegisters r;
-			r.d[0] = 1; // ShutDwnPower
-			Execute68kTrap(0xa895, &r); // _ShutDown
-		}
 		else if (strncmp(line, "RESTART", 7) == 0) {
 			hook_log("RESTART: initiating Mac OS restart");
 			M68kRegisters r;
 			r.d[0] = 2; // ShutDwnRestart
 			Execute68kTrap(0xa895, &r); // _ShutDown
 		}
-		else if (strncmp(line, "RUN_SCRIPT", 10) == 0) {
-			// Run an AppleScript via Script Editor:
-			// 1. Write the script to the Unix volume
-			// 2. Open it with Script Editor (Cmd+O + navigate)
-			// 3. Run it (Cmd+R)
-			// This is done in multiple command.txt cycles — not in one shot
-			hook_log("RUN_SCRIPT: use the KEY/CLICK commands to drive Script Editor");
-			write_file(resultpath, "RUN_SCRIPT: use KEY/CLICK/TYPE to drive Script Editor\n");
+		else if (strncmp(line, "SHUTDOWN", 8) == 0) {
+			hook_log("SHUTDOWN: initiating Mac OS shutdown");
+			M68kRegisters r;
+			r.d[0] = 1; // ShutDwnPower
+			Execute68kTrap(0xa895, &r); // _ShutDown
 		}
 		else {
 			hook_log("Unknown command: %s", line);
@@ -240,26 +231,7 @@ void ScriptHookIdle()
 			hook_initialized = true;
 			hook_log("Script hook initialized. Shared path: %s", shared_path);
 			hook_log("Drop 'command.txt' in the shared folder to execute commands.");
-
-			// Replace Gestalt('mach') with 0x7E AFTER boot completes.
-			// MESA II's SCSI Plug checks Gestalt('mach') <= 0x7E to identify
-			// Macs with built-in SCSI. Can't do this during boot — Mac OS 9
-			// rejects the disk if the machine type doesn't match.
-			M68kRegisters r;
-			r.d[0] = 32;
-			Execute68kTrap(0xa71e, &r);  // NewPtrSysClear
-			uint32 func_addr = r.a[0];
-			if (func_addr) {
-				WriteMacInt16(func_addr,     0x207C);  // movea.l #imm,a0
-				WriteMacInt32(func_addr + 2, 0x0000007E);
-				WriteMacInt16(func_addr + 6, 0x7000);  // moveq #0,d0
-				WriteMacInt16(func_addr + 8, 0x4E75);  // rts
-				r.d[0] = 0x6D616368;  // 'mach'
-				r.a[0] = func_addr;
-				Execute68kTrap(0xa5ad, &r);  // ReplaceGestalt
-				fprintf(stderr, "Post-boot ReplaceGestalt('mach') -> %d (value 0x7E)\n", (int32)r.d[0]);
-				fflush(stderr);
-			}
+			// Gestalt('mach') is now replaced early in InstallDrivers (rom_patches.cpp)
 		}
 		return;
 	}

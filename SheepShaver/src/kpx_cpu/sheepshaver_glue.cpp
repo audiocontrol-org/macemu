@@ -1164,6 +1164,13 @@ void sheepshaver_cpu::execute_native_op(uint32 selector)
 	case NATIVE_NAMED_CHECK_LOAD_INVOC:
 		named_check_load_invoc(gpr(3), gpr(4), gpr(5));
 		break;
+	case NATIVE_SCSI_ACTION: {
+		extern int32 HandleSCSIAction(uint32 pb);
+		uint32 pb = gpr(3);
+		int32 result = HandleSCSIAction(pb);
+		gpr(3) = (uint32)result;
+		break;
+	}
 	default:
 		printf("FATAL: NATIVE_OP called with bogus selector %d\n", selector);
 		QuitEmulator();

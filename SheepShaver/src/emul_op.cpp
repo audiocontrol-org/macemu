@@ -61,7 +61,7 @@ static uint32 MakeExecutableTvec;
 /*
  *  Handle SCSIAction parameter block — shared between 68k and PPC callers.
  */
-static int32 HandleSCSIAction(uint32 pb)
+int32 HandleSCSIAction(uint32 pb)
 {
 	static FILE *scsi_log = nullptr;
 	if (!scsi_log) {
@@ -126,11 +126,12 @@ static int32 HandleSCSIAction(uint32 pb)
 		}
 
 		uint16 stat = 0;
+		size_t actual = 0;
 		if (dataLength > 0 && dataPtr) {
 			uint8 *host_data_ptr = Mac2HostAddr(dataPtr);
 			uint8 *sg_ptr[1] = { host_data_ptr };
 			uint32 sg_len[1] = { dataLength };
-			bool ok = scsi_send_cmd(dataLength, reading, 1, sg_ptr, sg_len, &stat, 600);
+			bool ok = scsi_send_cmd(dataLength, reading, 1, sg_ptr, sg_len, &stat, 600, &actual);
 			if (!ok) {
 				WriteMacInt16(pb + 10, (uint16)(int16)-7936);
 				result = -7936;
@@ -144,14 +145,15 @@ static int32 HandleSCSIAction(uint32 pb)
 		}
 
 		WriteMacInt8(pb + 60, stat);
-		WriteMacInt32(pb + 64, 0);
+		WriteMacInt32(pb + 64, dataLength - actual); // scsiDataResidual
 		WriteMacInt16(pb + 36, 0);
 		WriteMacInt32(pb + 16, 0);
 		WriteMacInt16(pb + 10, (stat == 0) ? 0 : -7934);
 		result = (int16)ReadMacInt16(pb + 10);
 
 		if (scsi_log) {
-			fprintf(scsi_log, "  RESULT: scsi_status=%d result=%d\n", stat, result);
+			fprintf(scsi_log, "  RESULT: scsi_status=%d result=%d residual=%u (actual=%zu/%u)\n",
+				stat, result, (unsigned)(dataLength - actual), actual, dataLength);
 			if (reading && dataLength > 0 && dataPtr && stat == 0) {
 				uint32 dumpLen = dataLength < 256 ? dataLength : 256;
 				fprintf(scsi_log, "  DATA_IN[%u]:", dataLength);
@@ -187,8 +189,8 @@ static int32 HandleSCSIAction(uint32 pb)
 		WriteMacInt32(pb + 48, 0);
 		WriteMacInt8(pb + 52, 0x43);
 		WriteMacInt8(pb + 53, 0);
-		WriteMacInt8(pb + 68, 0);
-		WriteMacInt8(pb + 69, 7);
+		WriteMacInt8(pb + 68, 7);      // scsiInitiatorID — host adapter is SCSI ID 7
+		WriteMacInt8(pb + 69, 7);      // scsiMaxTarget
 		WriteMacInt16(pb + 84, 7);
 		WriteMacInt16(pb + 86, 0);
 		WriteMacInt16(pb + 10, 0);
@@ -725,6 +727,11 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			if (ReadMacInt32(0x14c) == 0)
 				idle_wait();
 			r->d[0] = (uint32)-2;
+			break;
+
+		case OP_PLUG_TRACE:
+			fprintf(stderr, "GESTALT_TRACE: d0=0x%08x a0=0x%08x\n", r->d[0], r->a[0]);
+			fflush(stderr);
 			break;
 
 		default:

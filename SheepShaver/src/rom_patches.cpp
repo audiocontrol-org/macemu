@@ -2079,6 +2079,39 @@ static bool patch_68k(void)
 	wp = (uint16 *)(ROMBaseHost + base + 0x20);
 	*wp++ = htons(0x7000);			// moveq	#0,d0
 	*wp = htons(M68K_RTS);
+
+	// Patch PPC SCSIAction thunks to route through our HandleSCSIAction.
+	// PPC stub at base+0x28: mr r3,r7 / NATIVE_SCSI_ACTION / blr
+	{
+		uint32 stub_offset = base + 0x28;
+		uint32 *pp = (uint32 *)(ROMBaseHost + stub_offset);
+		*pp++ = htonl(0x7CE33B78);  // mr r3, r7
+		*pp++ = htonl(NativeOpcode(NATIVE_SCSI_ACTION));
+		*pp++ = htonl(POWERPC_BLR);
+		uint32 stub_addr = ROMBase + stub_offset;
+		fprintf(stderr, "PPC SCSI stub at 0x%08x\n", stub_addr);
+
+		static const uint8 ppc_scsi_pattern[] = {0x7c, 0x08, 0x02, 0xa6, 0x80, 0x80, 0x06, 0x24};
+		uint32 loc = 0x150000;
+		int patched = 0;
+		while ((loc = find_rom_data(loc, 0x170000, ppc_scsi_pattern, sizeof(ppc_scsi_pattern))) != 0) {
+			uint32 bl_offset = loc + 0x2C;
+			uint32 bl_instr = ntohl(*(uint32 *)(ROMBaseHost + bl_offset));
+			if ((bl_instr & 0xFC000001) == 0x48000001) {
+				int32 rel = (int32)(stub_addr - (ROMBase + bl_offset));
+				uint32 new_bl = 0x48000001 | (rel & 0x03FFFFFC);
+				*(uint32 *)(ROMBaseHost + bl_offset) = htonl(new_bl);
+				fprintf(stderr, "  Thunk at 0x%06x: bl patched to stub (was 0x%08x now 0x%08x)\n",
+					loc, bl_instr, new_bl);
+				patched++;
+			} else {
+				fprintf(stderr, "  Thunk at 0x%06x: unexpected instr at +0x2C: 0x%08x\n", loc, bl_instr);
+			}
+			loc += 8;
+		}
+		fprintf(stderr, "Patched %d PPC SCSIAction thunks\n", patched);
+		fflush(stderr);
+	}
 #endif
 
 #if DISABLE_SCSI
@@ -2401,10 +2434,11 @@ void InstallDrivers(void)
 	// all SCSI operations.
 	{
 		uint32 gestalt_func = scsi_globals + 0xF00;
-		WriteMacInt16(gestalt_func,     0x207C);  // movea.l #imm,a0
-		WriteMacInt32(gestalt_func + 2, 0x000F);  // gestaltAsyncSCSI | gestaltAsyncSCSIINROM | etc.
-		WriteMacInt16(gestalt_func + 6, 0x7000);  // moveq #0,d0
-		WriteMacInt16(gestalt_func + 8, 0x4E75);  // rts
+		WriteMacInt16(gestalt_func,     M68K_EMUL_BREAK + OP_PLUG_TRACE);  // trace
+		WriteMacInt16(gestalt_func + 2, 0x207C);  // movea.l #imm,a0
+		WriteMacInt32(gestalt_func + 4, 0x000F);  // gestaltAsyncSCSI | gestaltAsyncSCSIINROM | etc.
+		WriteMacInt16(gestalt_func + 8, 0x7000);  // moveq #0,d0
+		WriteMacInt16(gestalt_func + 10, 0x4E75);  // rts
 
 		r.d[0] = 0x73637369;  // 'scsi'
 		r.a[0] = gestalt_func;
@@ -2420,9 +2454,10 @@ void InstallDrivers(void)
 		}
 	}
 
-	// NOTE: Gestalt('mach') replacement must happen AFTER boot completes
-	// (Mac OS 9 checks machine type during boot and rejects mismatched disks).
-	// It's done in ScriptHookIdle() instead.
+	// NOTE: Gestalt('mach') = 0x43 for this emulated Power Mac.
+	// 0x43 < 0x7E, so the SCSI Plug's "mach <= 0x7E" check should pass
+	// with the original value. No replacement needed.
+	// Replacing with 0x7E triggers "startup disk will not work" dialog.
 #endif
 
 	// Install floppy driver
