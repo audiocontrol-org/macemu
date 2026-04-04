@@ -644,8 +644,9 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 
 		case OP_SCSI_ATOMIC: {		// SCSIAction/SCSIAtomic replacement (68k callers)
 			uint32 pb = r->a[0];
-			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d\n",
-				pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14));
+			uint32 caller = ReadMacInt32(r->a[7]);  // return address on stack
+			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x\n",
+				pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14), caller, r->a[4]);
 			fflush(stderr);
 			r->d[0] = (uint32)HandleSCSIAction(pb);
 			break;

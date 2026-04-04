@@ -148,6 +148,7 @@ The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $
 | D | .EDisk DRVR missing | Already exists in resource chain (handle 0x10011d5c) |
 | E | Plug not loaded | Plug IS loaded — SCSI scans happen, "Use MIDI" grayed |
 | F | XPRAM byte $AF | Set to 0x01, no change |
+| G | Pre-init MIDI session (CDB 0x09) | Sent during SCSIInit, S3000XL accepted (status=0), no change |
 
 ### Theory E: SCSI Plug never loaded / initialized correctly (LESS LIKELY)
 The SCSI Plug is a system extension. The SCSI scans DO happen through SCSI Manager 4.3, and "Use MIDI" is grayed out (indicating the Plug detected SCSI capability). So the Plug IS active — it just fails the ".EDisk" check.

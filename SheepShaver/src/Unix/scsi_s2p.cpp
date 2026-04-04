@@ -320,6 +320,21 @@ void SCSIInit(void)
 	for (int id = 0; id < 8; id++) if (target_present[id]) count++;
 	fprintf(stderr, "scsi_s2p: init complete, %d target(s) found\n", count);
 
+	// Pre-initialize MIDI-over-SCSI session on any Processor-type targets.
+	// CDB 0x09: MIDI init (09 00 01 01 00 00)
+	// This activates the sampler's MIDI-via-SCSI interface before the
+	// SCSI Plug scans. The Plug may check for an active session.
+	for (int id = 0; id < 8; id++) {
+		if (!target_present[id]) continue;
+		uint8 init_cdb[6] = { 0x09, 0x00, 0x01, 0x01, 0x00, 0x00 };
+		auto cmd = build_scsi_exec(id, 0, init_cdb, 6, nullptr, 0, 0, 5);
+		std::vector<uint8> result;
+		if (s2p_command(cmd, result)) {
+			auto r = parse_scsi_result(result);
+			fprintf(stderr, "scsi_s2p: target %d MIDI init (CDB 09): ok=%d status=%d\n", id, r.ok, r.status);
+		}
+	}
+
 	SCSIReset();
 }
 

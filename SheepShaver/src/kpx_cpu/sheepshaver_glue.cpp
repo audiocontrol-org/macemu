@@ -1167,6 +1167,9 @@ void sheepshaver_cpu::execute_native_op(uint32 selector)
 	case NATIVE_SCSI_ACTION: {
 		extern int32 HandleSCSIAction(uint32 pb);
 		uint32 pb = gpr(3);
+		fprintf(stderr, "PPC_SCSIAction: pb=0x%08x func=%d target=%d lr=0x%08x\n",
+			pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14), lr());
+		fflush(stderr);
 		int32 result = HandleSCSIAction(pb);
 		gpr(3) = (uint32)result;
 		break;

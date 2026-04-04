@@ -251,6 +251,21 @@ void ScriptHookIdle()
 					fprintf(stderr, "SCSI Plug found: pattern at 0x%08x, base at 0x%08x\n",
 						pattern_addr, plug_base);
 					hook_log("SCSI Plug base at 0x%08x", plug_base);
+
+					// Dump Plug code to shared folder for offline analysis
+					const char *extfs = PrefsFindString("extfs");
+					if (extfs) {
+						char path[512];
+						snprintf(path, sizeof(path), "%s/plug_full.bin", extfs);
+						FILE *df = fopen(path, "wb");
+						if (df) {
+							// Dump 32KB of Plug code
+							for (uint32 i = 0; i < 0x8000; i++)
+								fputc(ReadMacInt8(plug_base + i), df);
+							fclose(df);
+							fprintf(stderr, "  Dumped 32KB of Plug code to %s\n", path);
+						}
+					}
 					fflush(stderr);
 				}
 			}
