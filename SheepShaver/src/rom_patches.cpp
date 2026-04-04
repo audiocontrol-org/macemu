@@ -2124,21 +2124,10 @@ static bool patch_68k(void)
 		// Fix: Add a NATIVE_OP after the lwz that logs the call.
 		// The lwz r4,0x0410(r0) is at pattern_offset + 4.
 		// We insert NativeOpcode after it to log r3 (PB) and r4 (handler).
-		// PPC _Control dispatch sites found at ROM 0x140EF8, 0x140F44, 0x140F90.
-		// These load the 68k handler from the trap table and call it via Mixed Mode.
-		// On SheepShaver, Mixed Mode fails for 68k handlers installed by the SCSI Plug.
-		// TODO: Fix Mixed Mode dispatch for these sites.
-		// For now, just log the sites (no patching — patching breaks boot).
-		static const uint8 control_dispatch_pattern[] = {0x7c, 0x08, 0x02, 0xa6, 0x80, 0x80, 0x04, 0x10};
-		loc = 0x140000;
-		patched = 0;
-		while ((loc = find_rom_data(loc, 0x150000, control_dispatch_pattern, sizeof(control_dispatch_pattern))) != 0) {
-			fprintf(stderr, "PPC _Control dispatch at ROM 0x%06x (not patched)\n", loc);
-			patched++;
-			loc += 4;
-		}
-		fprintf(stderr, "Found %d PPC _Control dispatch sites\n", patched);
-		fflush(stderr);
+		// PPC _Control dispatch sites at ROM 0x140EF8, 0x140F44, 0x140F90.
+		// NOT PATCHED — the Plug's handler contains PPC/68k mixed code that
+		// can't be called via Execute68k. Need a different approach.
+		// See DEBUGGING.md for full analysis.
 	}
 #endif
 

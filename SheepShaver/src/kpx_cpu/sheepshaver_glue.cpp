@@ -1175,39 +1175,50 @@ void sheepshaver_cpu::execute_native_op(uint32 selector)
 		break;
 	}
 	case NATIVE_CONTROL_DISPATCH: {
-		// Called from patched PPC _Control dispatch in ROM.
-		// r3 = handler addr from trap table, r6 = PB ptr
-		uint32 handler_addr = gpr(3);
-		uint32 pb = gpr(6);
+		// Replaces "lwz r4,0x0410(r0)" in the ROM's PPC _Control dispatch.
+		// After this NativeOp, the ROM function continues with r4 as the
+		// handler address and eventually calls Mixed Mode to dispatch.
+		//
+		// Strategy:
+		// - If Plug's 68k handler is active: call it via Execute68k, write
+		//   ioResult to PB, then set r4 to a PPC noErr stub address so
+		//   Mixed Mode calls the stub harmlessly.
+		// - If no Plug: load r4 from trap table (original behavior).
 
-		// If handler is a 68k address (Plug), call via Execute68k.
-		// If handler is PPC (original), call the original Mixed Mode
-		// dispatcher that we replaced. We saved the original bl target
-		// in r7 (set up by our ROM patch).
-		if (handler_addr > 0x10100000 && handler_addr < 0x11000000) {
+		uint32 handler_addr = ReadMacInt32(0x0410);
+
+		// Check if Plug is loaded by looking at _Read handler
+		uint32 read_handler = ReadMacInt32(0x0408);
+		if (read_handler > 0x10100000 && read_handler < 0x11000000) {
+			// Plug IS loaded. Compute Plug's _Control handler.
+			uint32 plug_base = read_handler - 0x0D60;
+			uint32 plug_control = plug_base + 0x0E20;
+
+			uint32 pb = gpr(3);
 			static int log_count = 0;
-			if (log_count < 20) {
-				fprintf(stderr, "NATIVE_CONTROL_DISPATCH(68k): handler=0x%08x pb=0x%08x ioRefNum=%d\n",
-					handler_addr, pb, (int16)ReadMacInt16(pb + 24));
+			if (log_count < 50) {
+				fprintf(stderr, "CONTROL_DISPATCH(68k): plug_ctrl=0x%08x pb=0x%08x ioRefNum=%d\n",
+					plug_control, pb, (int16)ReadMacInt16(pb + 24));
 				fflush(stderr);
 				log_count++;
 			}
+
+			// Call the Plug's 68k _Control handler
 			M68kRegisters r;
 			r.a[0] = pb;
-			Execute68k(handler_addr, &r);
-			gpr(3) = r.d[0];
+			Execute68k(plug_control, &r);
+
+			// Write result to PB ioResult field
+			WriteMacInt16(pb + 16, (uint16)(int16)r.d[0]);
+
+			// Set r4 to a PPC noErr stub so Mixed Mode proceeds without crashing.
+			// The stub address is stored at SCSIGlobals + 0xFE0.
+			uint32 scsi_globals = ReadMacInt32(0x0C0C);
+			uint32 noerr_stub = ReadMacInt32(scsi_globals + 0xFE0);
+			gpr(4) = noerr_stub;
 		} else {
-			// PPC handler: call the original Mixed Mode function.
-			// We saved the target in r7 from the ROM patch.
-			// Just branch to it by setting the return value and
-			// letting the caller continue with the original code.
-			//
-			// Actually: we need to NOT intercept this case at all.
-			// The cleanest fix: only patch the ROM bl when the trap
-			// table has a 68k handler. Check at idle time and patch/unpatch.
-			// For now, return -1 (controlErr) so the caller retries
-			// through another path.
-			gpr(3) = (uint32)(int32)-1; // controlErr
+			// No Plug yet — load r4 from trap table (original lwz behavior)
+			gpr(4) = handler_addr;
 		}
 		break;
 	}
