@@ -257,7 +257,23 @@ Inserted OP_PLUG_TRACE at the device type handler (dump 0x1150) and device state
 
 ## Next Steps
 
-1. **Investigate a4=0x03A4** — is this a valid device context or a bug? Read memory at 0x03A4+$24 and 0x03A4+$28 to see what the Plug's state check finds there.
-2. **Non-invasive tracing** — instead of patching Plug code, intercept SCSIAction to log the Mac stack/caller when the Plug makes calls. This reveals the Plug's call chain without modifying its code.
-3. **Compare with MESA I on OS 7** — MESA I connects via Old SCSI Manager without the Plug. Understanding why MESA I's simpler path works may reveal what the Plug needs.
-4. **Check if MESA II needs UI interaction** — the device shows "Not Online" — maybe the user must click on it to trigger connection. Automate this via xdotool (need correct window coordinates).
+## Root Cause: s2p-midi SCSI_EXEC doesn't route to emulated devices
+
+`ProcessScsiQueue()` in `command_dispatcher.cpp` always creates an `InitiatorExecutor` 
+that talks to the physical SCSI bus. For emulated SCHD targets (IDs 0-5, 7), there's 
+nothing on the physical bus at those IDs, so the command times out (status -1 → 255).
+
+**Fix:** In `ProcessScsiQueue()`, check `controller_factory.GetDeviceForIdAndLun(target_id, target_lun)`. 
+If non-null, route the CDB through the emulated device's command handler instead of the physical bus.
+
+**Evidence:** With Akai disk images mounted at IDs 0-5,7, MESA II shows errors -13003 
+(err_ReplyLength) and -14000 (err_scsiUnitRange) — proving the Plug IS trying to 
+communicate. Without disk images, only the S3000XL at ID 6 is found, and the Plug 
+silently shows "Not Online" with no errors.
+
+## Next Steps
+
+1. **Fix SCSI_EXEC for emulated devices** in scsi2pi command_dispatcher.cpp
+2. **Test with Akai disk images** — if MESA II can read them, the bridge works
+3. **Then investigate S3000XL "Not Online"** — may be a device-type issue (Processor vs Hard Disk)
+4. **Consider whether MESA II expects hard disk devices** — the Akai disk images are type 0 (Hard Disk), the S3000XL is type 3 (Processor). The Plug might only support disk-type devices for the "Disk" window.
