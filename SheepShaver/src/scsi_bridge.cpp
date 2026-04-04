@@ -36,7 +36,31 @@
 
 int16 SCSIBridgeOpen(uint32 pb, uint32 dce)
 {
-	fprintf(stderr, "SCSIBridgeOpen pb=0x%08x dce=0x%08x\n", pb, dce);
+	int16 refNum = ReadMacInt16(pb + ioRefNum);
+	fprintf(stderr, "SCSIBridgeOpen pb=0x%08x dce=0x%08x ioRefNum=%d\n", pb, dce, refNum);
+
+	// Dump the first 20 entries of the unit table to find other SCSI drivers
+	uint32 unit_table = ReadMacInt32(0x11C);
+	fprintf(stderr, "  Unit table at 0x%08x:\n", unit_table);
+	for (int i = 0; i < 65; i++) {
+		uint32 entry = ReadMacInt32(unit_table + i * 4);
+		if (entry) {
+			uint32 dce_ptr = ReadMacInt32(entry);
+			if (dce_ptr) {
+				uint32 drv_ptr = ReadMacInt32(dce_ptr);
+				if (drv_ptr > 0x1000) {
+					// Read driver name (Pascal string at drv_ptr + 18)
+					uint8 name_len = ReadMacInt8(drv_ptr + 18);
+					if (name_len > 0 && name_len < 32) {
+						char name[33] = {};
+						for (int j = 0; j < name_len; j++)
+							name[j] = ReadMacInt8(drv_ptr + 19 + j);
+						fprintf(stderr, "    refNum=%d: \"%s\" drv=0x%08x\n", -(i+1), name, drv_ptr);
+					}
+				}
+			}
+		}
+	}
 	fflush(stderr);
 	return noErr;
 }
@@ -72,15 +96,21 @@ int16 SCSIBridgeControl(uint32 pb, uint32 dce)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
 
-	fprintf(stderr, "SCSIBridgeControl pb=0x%08x csCode=%d (0x%04x) csParam hex dump:", pb, code, code);
-	// Hex dump first 22 bytes of csParam (PB offset 28-49)
-	for (int i = 0; i < 22; i++) {
-		fprintf(stderr, " %02x", ReadMacInt8(pb + csParam + i));
+	switch (code) {
+	case 1: // KillIO
+		return noErr;
+	case 65: // accRun — periodic, don't log
+		return noErr;
+	default:
+		// Log and return noErr for unknown codes (discovery mode)
+		fprintf(stderr, "SCSIBridgeControl pb=0x%08x csCode=%d (0x%04x) csParam:", pb, code, code);
+		for (int i = 0; i < 22; i++) {
+			fprintf(stderr, " %02x", ReadMacInt8(pb + csParam + i));
+		}
+		fprintf(stderr, "\n");
+		fflush(stderr);
+		return noErr;
 	}
-	fprintf(stderr, "\n");
-	fflush(stderr);
-
-	return noErr;
 }
 
 
@@ -92,8 +122,14 @@ int16 SCSIBridgeStatus(uint32 pb, uint32 dce)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
 
-	fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x)\n", pb, code, code);
-	fflush(stderr);
-
-	return noErr;
+	// Return statusErr for most codes — returning noErr without data
+	// causes Mac OS to loop infinitely on csCode 13/17.
+	// Log non-polling codes for discovery.
+	static int status_log_count = 0;
+	if (code != 10 && status_log_count < 50) {
+		fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x)\n", pb, code, code);
+		fflush(stderr);
+		status_log_count++;
+	}
+	return statusErr;
 }
