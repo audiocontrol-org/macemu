@@ -291,6 +291,21 @@ causing -13003 (err_ReplyLength).
 _Read/_Write/_Control calls into our scsi_send_cmd() backend. OR intercept the 
 Device Manager traps to catch calls to the SCSI driver.
 
+**Update:** Clicking SCSI icon in Disk window triggers -13003 errors WITHOUT any new 
+scsi_send_cmd calls. The Plug's Device Manager hook fires but fails internally 
+before attempting SCSI I/O. This is because the Plug never established a sampler 
+connection during init — the -13003 is a symptom of the missing initial connection, 
+not the root cause.
+
+The Plug's init scans via SCSIAction (INQUIRY), but the connection step (which would 
+send CDB 0x09/0x0C/0x0D/0x0E via the Device Manager hooks) never happens. The gap 
+is between "INQUIRY found the S3000XL" and "initiate MIDI-over-SCSI session."
+
+The Plug patches _Read/_Write/_Control/_Status via _SetOSTrapAddress during its 68k 
+INIT code. On PPC Mac (which SheepShaver emulates), PPC callers might bypass 68k 
+trap patches. The Plug's PPC code section may contain the actual connection logic 
+that we haven't been able to trace.
+
 ## Additional: s2p-midi SCSI_EXEC doesn't route to emulated devices
 
 `ProcessScsiQueue()` in `command_dispatcher.cpp` always creates an `InitiatorExecutor` 

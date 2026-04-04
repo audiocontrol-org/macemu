@@ -376,10 +376,11 @@ bool scsi_send_cmd(size_t data_length, bool reading, int sg_size,
 {
 	if (current_target_id < 0) return false;
 
-	// Log the command
-	D(bug("scsi_s2p: send_cmd target=%d:%d cdb=", current_target_id, current_target_lun));
-	for (int i = 0; i < the_cmd_len; i++) D(bug("%02x ", the_cmd[i]));
-	D(bug(" %s %zu bytes, %d sg entries\n", reading ? "READ" : "WRITE", data_length, sg_size));
+	// ALWAYS log every SCSI command (not just when DEBUG is on)
+	fprintf(stderr, "scsi_s2p: SEND target=%d:%d cdb=", current_target_id, current_target_lun);
+	for (int i = 0; i < the_cmd_len; i++) fprintf(stderr, "%02x ", the_cmd[i]);
+	fprintf(stderr, "%s %zu bytes\n", reading ? "IN" : "OUT", data_length);
+	fflush(stderr);
 
 	// Handle autosense: if this is REQUEST SENSE and we have cached sense
 	if (reading && the_cmd[0] == 0x03 && have_sense) {
