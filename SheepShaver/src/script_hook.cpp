@@ -232,37 +232,26 @@ void ScriptHookIdle()
 			hook_log("Script hook initialized. Shared path: %s", shared_path);
 			hook_log("Drop 'command.txt' in the shared folder to execute commands.");
 
-			// Patch MESA II's SCSI Plug to bypass the ".EDisk" DRVR check.
-			// The Plug calls GetNamedResource('DRVR', ".EDisk") and if it
-			// returns NULL, declares no SCSI capability. On SheepShaver the
-			// Apple SCSI disk driver isn't loaded, so this always fails.
-			// We search Mac memory for the check pattern and NOP the branch.
-			//
-			// Pattern: 285F 200C 6704 7E01 (movea.l (sp)+,a4 / move.l a4,d0 / beq.s +4 / moveq #1,d7)
-			// Patch: change 6704 (beq.s) to 4E71 (nop) so it always sets d7=1
+			// Find SCSI Plug in memory and log its base address.
+			// Pattern: 285F 200C 6704 7E01 at dump offset 0x06EC
+			// NOTE: Do NOT insert OP_PLUG_TRACE into Plug code — it replaces
+			// original instructions and breaks the Plug's behavior.
 			{
 				static const uint8 pattern[] = {0x28, 0x5F, 0x20, 0x0C, 0x67, 0x04, 0x7E, 0x01};
-				// Search in the zone where extensions load (~0x10000000-0x11000000)
-				bool found = false;
+				uint32 pattern_addr = 0;
 				for (uint32 addr = 0x10000000; addr < 0x11000000; addr += 2) {
 					bool match = true;
 					for (int i = 0; i < 8; i++) {
 						if (ReadMacInt8(addr + i) != pattern[i]) { match = false; break; }
 					}
-					if (match) {
-						// Patch beq.s at addr+4 to nop
-						WriteMacInt16(addr + 4, 0x4E71);  // nop
-						fprintf(stderr, "Patched SCSI Plug .EDisk check at 0x%08x\n", addr);
-						fflush(stderr);
-						hook_log("Patched SCSI Plug .EDisk check at 0x%08x", addr);
-						found = true;
-						break;
-					}
+					if (match) { pattern_addr = addr; break; }
 				}
-				if (!found) {
-					fprintf(stderr, "WARNING: SCSI Plug .EDisk pattern not found in memory\n");
+				if (pattern_addr) {
+					uint32 plug_base = pattern_addr - 0x06EC;
+					fprintf(stderr, "SCSI Plug found: pattern at 0x%08x, base at 0x%08x\n",
+						pattern_addr, plug_base);
+					hook_log("SCSI Plug base at 0x%08x", plug_base);
 					fflush(stderr);
-					hook_log("WARNING: SCSI Plug .EDisk pattern not found");
 				}
 			}
 		}

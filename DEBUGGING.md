@@ -187,7 +187,18 @@ The specific changes that cause the hang:
 
 ## Next Steps
 
-1. **Test XPRAM byte $00AF** — set XPRAM byte $AF to non-zero during InstallDrivers and check if the Plug's behavior changes.
-2. **Fully disassemble the Plug's capability function** — understand every check between .EDisk and the final return value.
-3. **Trace the Plug's actual decision** — add an emulation op at the Plug's function entry/exit to log what it returns at runtime.
-4. **Compare with MESA I on OS 7** — MESA I connects via Old SCSI Manager. The difference between MESA I (works) and MESA II (doesn't) is the SCSI Plug. Understanding why MESA I's simpler path works may reveal what the Plug needs.
+## Runtime Trace Results
+
+Inserted OP_PLUG_TRACE at the device type handler (dump 0x1150) and device state check (dump 0x115C). Key findings:
+
+- **devtype3_handler fires repeatedly** — 2445 times for type 2 (Tape), 3 times for type 3 (Processor/S3000XL). This is a continuous polling loop.
+- **a4 = 0x000003A4** — low-memory address, not a heap pointer. Should point to a per-device data structure. This value is suspicious and may indicate the Plug's data structures aren't properly initialized.
+- **Capability function traces never fired** — the cap_entry/cap_return/caller functions ran during extension loading (before idle hook installed traces). Their behavior cannot be observed post-boot.
+- **CAUTION**: Inserting OP_PLUG_TRACE replaces original instructions and breaks the Plug's behavior. The trace ops for devtype3_handler replaced `moveq #0,d0` (0x7000) and for devstate_check replaced `bne.s +16` (0x6610). These were removed.
+
+## Next Steps
+
+1. **Investigate a4=0x03A4** — is this a valid device context or a bug? Read memory at 0x03A4+$24 and 0x03A4+$28 to see what the Plug's state check finds there.
+2. **Non-invasive tracing** — instead of patching Plug code, intercept SCSIAction to log the Mac stack/caller when the Plug makes calls. This reveals the Plug's call chain without modifying its code.
+3. **Compare with MESA I on OS 7** — MESA I connects via Old SCSI Manager without the Plug. Understanding why MESA I's simpler path works may reveal what the Plug needs.
+4. **Check if MESA II needs UI interaction** — the device shows "Not Online" — maybe the user must click on it to trigger connection. Automate this via xdotool (need correct window coordinates).

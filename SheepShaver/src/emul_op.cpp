@@ -730,7 +730,8 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			break;
 
 		case OP_PLUG_TRACE:
-			fprintf(stderr, "GESTALT_TRACE: d0=0x%08x a0=0x%08x\n", r->d[0], r->a[0]);
+			fprintf(stderr, "PLUG_TRACE pc=0x%08x d0=0x%08x d7=0x%08x a0=0x%08x a4=0x%08x\n",
+				pc, r->d[0], r->d[7], r->a[0], r->a[4]);
 			fflush(stderr);
 			break;
 
