@@ -2458,6 +2458,58 @@ void InstallDrivers(void)
 	// 0x43 < 0x7E, so the SCSI Plug's "mach <= 0x7E" check should pass
 	// with the original value. No replacement needed.
 	// Replacing with 0x7E triggers "startup disk will not work" dialog.
+
+	// Install a fake ".EDisk" DRVR resource so MESA II's SCSI Plug passes
+	// its capability check. The Plug calls GetNamedResource('DRVR', ".EDisk")
+	// during extension loading. Without this DRVR, it declares no SCSI.
+	// On real Macs with SCSI hardware, ".EDisk" is the Apple SCSI disk driver.
+	{
+		// Allocate a minimal handle for the fake DRVR (just a header)
+		fprintf(stderr, "Attempting to install fake .EDisk DRVR...\n"); fflush(stderr);
+		r.d[0] = 32;  // 32 bytes
+		Execute68kTrap(0xa122, &r);  // _NewHandleSysClear
+		uint32 h = r.a[0];
+		fprintf(stderr, "  NewHandleSysClear(32) -> 0x%08x\n", h); fflush(stderr);
+		if (h) {
+			// Build Pascal string "\p.EDisk" on the stack
+			uint32 name_ptr = scsi_globals + 0xF80;
+			WriteMacInt8(name_ptr, 6);        // length
+			WriteMacInt8(name_ptr + 1, '.');
+			WriteMacInt8(name_ptr + 2, 'E');
+			WriteMacInt8(name_ptr + 3, 'D');
+			WriteMacInt8(name_ptr + 4, 'i');
+			WriteMacInt8(name_ptr + 5, 's');
+			WriteMacInt8(name_ptr + 6, 'k');
+
+			// AddResource(h, 'DRVR', 128, name)
+			r.a[0] = h;
+			r.d[0] = 0x44525652;  // 'DRVR'
+			r.d[1] = 128;         // resID
+			r.a[1] = name_ptr;    // name
+
+			// Build 68k stub to call AddResource:
+			// move.l a0,-(sp)      ; handle
+			// move.l d0,-(sp)      ; resType
+			// move.w d1,-(sp)      ; resID
+			// move.l a1,-(sp)      ; name
+			// _AddResource (A9AB)
+			// rts
+			uint32 stub = scsi_globals + 0xF90;
+			WriteMacInt16(stub + 0,  0x2F08);  // move.l a0,-(sp)
+			WriteMacInt16(stub + 2,  0x2F00);  // move.l d0,-(sp)
+			WriteMacInt16(stub + 4,  0x3F01);  // move.w d1,-(sp)
+			WriteMacInt16(stub + 6,  0x2F09);  // move.l a1,-(sp)
+			WriteMacInt16(stub + 8,  0xA9AB);  // _AddResource
+			WriteMacInt16(stub + 10, 0x4E75);  // rts
+			fprintf(stderr, "  Calling AddResource stub at 0x%08x...\n", stub); fflush(stderr);
+			Execute68k(stub, &r);
+			fprintf(stderr, "  AddResource('.EDisk' DRVR) handle=0x%08x done\n", h);
+			fflush(stderr);
+		} else {
+			fprintf(stderr, "WARNING: Failed to allocate handle for .EDisk DRVR\n");
+			fflush(stderr);
+		}
+	}
 #endif
 
 	// Install floppy driver
