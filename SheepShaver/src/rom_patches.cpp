@@ -2111,6 +2111,22 @@ static bool patch_68k(void)
 		}
 		fprintf(stderr, "Patched %d PPC SCSIAction thunks\n", patched);
 		fflush(stderr);
+
+		// Patch PPC _Control dispatch to log calls.
+		// The ROM at 0x140EFC (and 0x140F48, 0x140F94) does:
+		//   lwz r4, 0x0410(r0)  — load _Control handler from trap table
+		// We replace this with a load of a known value so we can trace it.
+		// Pattern: 7c0802a6 80800410 (mfspr r0,LR; lwz r4,0x410(r0))
+		static const uint8 control_dispatch_pattern[] = {0x7c, 0x08, 0x02, 0xa6, 0x80, 0x80, 0x04, 0x10};
+		loc = 0x140000;
+		patched = 0;
+		while ((loc = find_rom_data(loc, 0x150000, control_dispatch_pattern, sizeof(control_dispatch_pattern))) != 0) {
+			fprintf(stderr, "PPC _Control dispatch at ROM 0x%06x\n", loc);
+			patched++;
+			loc += 4;
+		}
+		fprintf(stderr, "Found %d PPC _Control dispatch sites\n", patched);
+		fflush(stderr);
 	}
 #endif
 
