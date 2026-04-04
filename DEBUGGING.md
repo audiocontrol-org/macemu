@@ -257,6 +257,21 @@ Inserted OP_PLUG_TRACE at the device type handler (dump 0x1150) and device state
 
 ## Next Steps
 
+## Key Behavioral Observation
+
+On a real Mac, "Find Sampler..." takes noticeable time (tens to hundreds of ms) as the 
+Plug scans the SCSI bus, then shows a dialog listing found devices (e.g., "Bus 0, ID=6: 
+AKAI EMIS3200XL SAMPLER 2.00"). The user selects one and clicks OK.
+
+On our emulation, "Find Sampler..." returns **instantly** with no dialog — the Plug 
+returns a cached "no devices" result without scanning. This means the Plug decided at 
+extension load time that SCSI isn't viable and set a permanent "no SCSI" flag.
+
+The 3 rounds of INQUIRY in the SCSI trace are from the Plug's **init scan** during 
+extension loading. The Plug finds the S3000XL but something in post-scan processing 
+fails, and it caches "no samplers found." All subsequent Find Sampler calls return 
+the cached result instantly.
+
 ## Root Cause: s2p-midi SCSI_EXEC doesn't route to emulated devices
 
 `ProcessScsiQueue()` in `command_dispatcher.cpp` always creates an `InitiatorExecutor` 
