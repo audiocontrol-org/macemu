@@ -150,6 +150,7 @@ The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $
 | F | XPRAM byte $AF | Set to 0x01, no change |
 | G | Pre-init MIDI session (CDB 0x09) | Sent during SCSIInit, S3000XL accepted (status=0), no change |
 | H | Patch INQUIRY byte 5 bit 5 | Set bit 5 (0x20) in INQUIRY response byte 5, no change |
+| I | Implement OldCall 0x86 with TUR | OldCall now sends TEST UNIT READY (status=0 for target 6), no change |
 
 ## Detailed Disassembly of Plug Function 0x10FC
 

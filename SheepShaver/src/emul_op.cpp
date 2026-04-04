@@ -223,10 +223,36 @@ int32 HandleSCSIAction(uint32 pb)
 		break;
 	}
 	case 0x84: case 0x85: case 0x86: { // scsiOldCall variants
+		// On a real Mac, OldCall translates old-style SCSI Manager calls
+		// into SCSI Manager 4.3 ExecIO calls and executes them.
+		// We execute a TEST UNIT READY to verify the target is responsive
+		// and populate the PB with realistic results.
 		bool exists = scsi_is_target_present(targetID);
-		result = exists ? 0 : -7932;
+		if (exists) {
+			uint8 tur_cdb[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}; // TEST UNIT READY
+			scsi_set_cmd(6, tur_cdb);
+			if (scsi_set_target(targetID, lun)) {
+				uint16 tur_stat = 0;
+				uint8 *sg_ptr[1] = { nullptr };
+				uint32 sg_len[1] = { 0 };
+				scsi_send_cmd(0, false, 0, sg_ptr, sg_len, &tur_stat, 30);
+				// Set SCSI status in the OldCall PB
+				WriteMacInt8(pb + 60, tur_stat);  // scsiSCSIstatus
+				result = (tur_stat == 0) ? 0 : -7934; // noErr or scsiDataRunError
+				if (scsi_log) {
+					fprintf(scsi_log, "  OldCall(0x%02x): target=%d TUR status=%d result=%d\n",
+						functionCode, targetID, tur_stat, result);
+				}
+			} else {
+				result = -7932; // scsiNoTarget
+				if (scsi_log) fprintf(scsi_log, "  OldCall(0x%02x): target=%d set_target failed\n", functionCode, targetID);
+			}
+		} else {
+			result = -7932;
+			if (scsi_log) fprintf(scsi_log, "  OldCall(0x%02x): target=%d not present\n", functionCode, targetID);
+		}
 		WriteMacInt16(pb + 10, (uint16)(int16)result);
-		if (scsi_log) { fprintf(scsi_log, "  OldCall(0x%02x): target=%d exists=%d\n", functionCode, targetID, exists); fflush(scsi_log); }
+		if (scsi_log) fflush(scsi_log);
 		break;
 	}
 	case 0: case 4: case 5: case 6: case 7: case 8:
