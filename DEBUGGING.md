@@ -39,7 +39,7 @@ All containers need `--privileged` for `vm.mmap_min_addr=0`.
 4. **INQUIRY** — S3000XL found at target 6, returns `AKAI EMIS3000XL SAMPLER 2.00`
 5. **scsi_s2p fixes** — Removed incorrect `<< 1` status shift; CHECK CONDITION returns transport success
 6. **SHUTDOWN command** — Write `SHUTDOWN` to `{extfs}/command.txt` for clean shutdown
-7. **MESA I on OS 7** — Connects (TUR + INQUIRY succeed), but doesn't load data (OS version mismatch — MESA I needs S3000XL OS 1.x, device has 2.00)
+7. **MESA I on OS 7** — Does NOT connect. TUR + INQUIRY succeed at SCSI level but MESA I does not establish a sampler connection.
 8. **PPC SCSIAction thunks** — 5 thunks patched at ROM 0x150000-0x170000, confirmed in stderr
 9. **Gestalt('scsi')** — Registered in InstallDrivers, returns gestaltAsyncSCSI flags
 10. **ROM+0x12** — Patched from 0x28F1 to 0x2AF2
@@ -149,9 +149,43 @@ The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $
 | E | Plug not loaded | Plug IS loaded — SCSI scans happen, "Use MIDI" grayed |
 | F | XPRAM byte $AF | Set to 0x01, no change |
 | G | Pre-init MIDI session (CDB 0x09) | Sent during SCSIInit, S3000XL accepted (status=0), no change |
+| H | Patch INQUIRY byte 5 bit 5 | Set bit 5 (0x20) in INQUIRY response byte 5, no change |
 
-### Theory E: SCSI Plug never loaded / initialized correctly (LESS LIKELY)
-The SCSI Plug is a system extension. The SCSI scans DO happen through SCSI Manager 4.3, and "Use MIDI" is grayed out (indicating the Plug detected SCSI capability). So the Plug IS active — it just fails the ".EDisk" check.
+## Detailed Disassembly of Plug Function 0x10FC
+
+This is the INQUIRY result handler. Parameters:
+- a3 = caller's a4 (from 0x12AA: first param = a4 from ITS caller)
+- a4 = caller's a3 (from 0x12AA: second param)
+
+```
+0x110C: moveq #7,d0
+0x110E: and.w (a4+6),d0       ; d7 = low 3 bits of word at a4+6
+0x1116: moveq #0x20,d0
+0x1118: and.w (a3+4),d0       ; d1 = bit 5 of word at a3+4
+0x1120: tst.l d1
+0x1122: bne.s 0x1130           ; if d1 != 0, continue to device type check
+        → ERROR: stores -28 in (a4+16), returns 0xE4
+
+0x1130: d0 = d7 - 2
+0x1134: if d7 < 2 → skip to 0x11A0
+0x1136: if d7 > 5 → skip to 0x11A0
+        → Jump table for d7 values 2-5 (device types?)
+
+0x1150: (d7=2 or 3): handler for Processor/Tape types
+```
+
+**CRITICAL UNKNOWN: what do a3 and a4 actually point to?**
+Assumed a3 = INQUIRY data, which would make (a3+4) = INQUIRY bytes 4-5 = 0x2000.
+0x2000 AND 0x0020 = 0 → FAILS. But patching byte 5 to 0x20 makes word = 0x2020,
+0x2020 AND 0x0020 = 0x0020 → PASSES. Yet MESA still shows "Not Online."
+
+This means either:
+1. a3 does NOT point to raw INQUIRY data (it points to a processed structure)
+2. The check passes but a later check fails
+3. The disassembly or offset calculation is wrong
+
+### Theory E: SCSI Plug never loaded / initialized correctly (DISPROVEN)
+The SCSI Plug IS loaded (found in memory at 0x1014E9DA) and IS active — it makes OldCall 0x86 and ExecIO INQUIRY calls during boot via SCSIAtomic (68k path, caller=0x101501DA). Note: "Use MIDI" is grayed because there's no MIDI interface in the OS 9 instance, NOT because the Plug detected SCSI.
 
 ## Key Files
 

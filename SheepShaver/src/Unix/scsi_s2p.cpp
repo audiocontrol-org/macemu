@@ -452,6 +452,16 @@ bool scsi_send_cmd(size_t data_length, bool reading, int sg_size,
 		fflush(stderr);
 	}
 
+	// Patch INQUIRY response byte 5: set bit 5 (0x20).
+	// The SCSI Plug's INQUIRY handler checks this bit and rejects
+	// devices that don't have it set. The S3000XL is SCSI-1 and
+	// returns byte 5 = 0x00. This bit indicates "EncServ" in SCSI-2+
+	// but the Plug may use it as a general capability flag.
+	if (reading && the_cmd[0] == 0x12 && r.data_in.size() > 5) {
+		r.data_in[5] |= 0x20;
+		fprintf(stderr, "scsi_s2p: patched INQUIRY byte 5: 0x%02x\n", r.data_in[5]);
+	}
+
 	// Scatter response data back to S/G table
 	if (reading && !r.data_in.empty()) {
 		const uint8 *src = r.data_in.data();

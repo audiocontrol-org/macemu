@@ -154,6 +154,21 @@ int32 HandleSCSIAction(uint32 pb)
 		if (scsi_log) {
 			fprintf(scsi_log, "  RESULT: scsi_status=%d result=%d residual=%u (actual=%zu/%u)\n",
 				stat, result, (unsigned)(dataLength - actual), actual, dataLength);
+			// For INQUIRY (CDB 0x12) to target 6, dump the full PB and data buffer
+			// so we can verify what the Plug's code reads
+			if (reading && stat == 0 && cdb[0] == 0x12 && targetID == 6) {
+				fprintf(scsi_log, "  TARGET6_INQUIRY_PB[%d] at 0x%08x:\n", pbLength, pb);
+				int dumpPB = pbLength > 0 ? (pbLength < 256 ? pbLength : 256) : 176;
+				for (int ii = 0; ii < dumpPB; ii++) {
+					if (ii % 16 == 0) fprintf(scsi_log, "    pb+%02x:", ii);
+					fprintf(scsi_log, " %02x", ReadMacInt8(pb + ii));
+					if (ii % 16 == 15) fprintf(scsi_log, "\n");
+				}
+				fprintf(scsi_log, "\n");
+				// Also dump memory at the INQUIRY data pointer and surrounding area
+				fprintf(scsi_log, "  INQUIRY_BUF at 0x%08x (word at +4 = 0x%04x, word at +6 = 0x%04x):\n",
+					dataPtr, ReadMacInt16(dataPtr + 4), ReadMacInt16(dataPtr + 6));
+			}
 			if (reading && dataLength > 0 && dataPtr && stat == 0) {
 				uint32 dumpLen = dataLength < 256 ? dataLength : 256;
 				fprintf(scsi_log, "  DATA_IN[%u]:", dataLength);
