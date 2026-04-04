@@ -59,6 +59,187 @@ static uint32 MakeExecutableTvec;
 
 
 /*
+ *  Handle SCSIAction parameter block — shared between 68k and PPC callers.
+ */
+static int32 HandleSCSIAction(uint32 pb)
+{
+	static FILE *scsi_log = nullptr;
+	if (!scsi_log) {
+		const char *extfs = PrefsFindString("extfs");
+		if (extfs) {
+			char logpath[512];
+			snprintf(logpath, sizeof(logpath), "%s/scsi_trace.log", extfs);
+			scsi_log = fopen(logpath, "w");
+			if (scsi_log) fprintf(scsi_log, "=== SCSI Trace Log ===\n");
+		}
+	}
+
+	int32 result = 0;
+	uint8 functionCode = ReadMacInt8(pb + 8);
+	uint8 busNum = ReadMacInt8(pb + 13);
+	uint8 targetID = ReadMacInt8(pb + 14);
+	uint8 lun = ReadMacInt8(pb + 15);
+	uint16 pbLength = ReadMacInt16(pb + 6);
+
+	if (scsi_log) {
+		fprintf(scsi_log, "\n--- CALL func=0x%02x(%d) bus=%d target=%d lun=%d pbLen=%d pb=0x%08x ---\n",
+			functionCode, functionCode, busNum, targetID, lun, pbLength, pb);
+		int dumpSize = pbLength > 0 ? (pbLength < 256 ? pbLength : 256) : 176;
+		fprintf(scsi_log, "PB_BEFORE[%d]:", dumpSize);
+		for (int i = 0; i < dumpSize; i++) {
+			if (i % 32 == 0) fprintf(scsi_log, "\n  %3d:", i);
+			fprintf(scsi_log, " %02x", ReadMacInt8(pb + i));
+		}
+		fprintf(scsi_log, "\n");
+		fflush(scsi_log);
+	}
+
+	switch (functionCode) {
+	case 1: { // SCSIExecIO
+		uint32 flags = ReadMacInt32(pb + 20);
+		uint8 cdbLength = ReadMacInt8(pb + 53);
+		uint32 dataPtr = ReadMacInt32(pb + 40);
+		uint32 dataLength = ReadMacInt32(pb + 44);
+		bool cdbIsPointer = (flags & 0x01000000) != 0;
+		uint32 cdbAddr = cdbIsPointer ? ReadMacInt32(pb + 68) : (pb + 68);
+		bool reading = (flags & 0x40000000) != 0;
+		bool writing = (flags & 0x80000000) != 0;
+
+		uint8 cdb[16] = {};
+		for (int i = 0; i < cdbLength && i < 16; i++)
+			cdb[i] = ReadMacInt8(cdbAddr + i);
+
+		if (scsi_log) {
+			fprintf(scsi_log, "  ExecIO: flags=0x%08x cdbLen=%d dir=%s dataPtr=0x%08x dataLen=%u\n",
+				flags, cdbLength, reading ? "IN" : writing ? "OUT" : "NONE", dataPtr, dataLength);
+			fprintf(scsi_log, "  CDB:");
+			for (int i = 0; i < cdbLength; i++) fprintf(scsi_log, " %02x", cdb[i]);
+			fprintf(scsi_log, "\n");
+		}
+
+		scsi_set_cmd(cdbLength, cdb);
+		if (!scsi_set_target(targetID, lun)) {
+			WriteMacInt16(pb + 10, (uint16)(int16)-7932);
+			result = -7932;
+			if (scsi_log) { fprintf(scsi_log, "  RESULT: scsiNoTarget\n"); fflush(scsi_log); }
+			break;
+		}
+
+		uint16 stat = 0;
+		if (dataLength > 0 && dataPtr) {
+			uint8 *host_data_ptr = Mac2HostAddr(dataPtr);
+			uint8 *sg_ptr[1] = { host_data_ptr };
+			uint32 sg_len[1] = { dataLength };
+			bool ok = scsi_send_cmd(dataLength, reading, 1, sg_ptr, sg_len, &stat, 600);
+			if (!ok) {
+				WriteMacInt16(pb + 10, (uint16)(int16)-7936);
+				result = -7936;
+				if (scsi_log) { fprintf(scsi_log, "  RESULT: FAILED\n"); fflush(scsi_log); }
+				break;
+			}
+		} else {
+			uint8 *sg_ptr[1] = { nullptr };
+			uint32 sg_len[1] = { 0 };
+			scsi_send_cmd(0, false, 0, sg_ptr, sg_len, &stat, 600);
+		}
+
+		WriteMacInt8(pb + 60, stat);
+		WriteMacInt32(pb + 64, 0);
+		WriteMacInt16(pb + 36, 0);
+		WriteMacInt32(pb + 16, 0);
+		WriteMacInt16(pb + 10, (stat == 0) ? 0 : -7934);
+		result = (int16)ReadMacInt16(pb + 10);
+
+		if (scsi_log) {
+			fprintf(scsi_log, "  RESULT: scsi_status=%d result=%d\n", stat, result);
+			if (reading && dataLength > 0 && dataPtr && stat == 0) {
+				uint32 dumpLen = dataLength < 256 ? dataLength : 256;
+				fprintf(scsi_log, "  DATA_IN[%u]:", dataLength);
+				for (uint32 i = 0; i < dumpLen; i++) {
+					if (i % 32 == 0) fprintf(scsi_log, "\n   ");
+					fprintf(scsi_log, " %02x", ReadMacInt8(dataPtr + i));
+				}
+				fprintf(scsi_log, "\n  ASCII: ");
+				for (uint32 i = 0; i < dumpLen; i++) {
+					uint8 c = ReadMacInt8(dataPtr + i);
+					fprintf(scsi_log, "%c", (c >= 32 && c < 127) ? c : '.');
+				}
+				fprintf(scsi_log, "\n");
+			}
+			fflush(scsi_log);
+		}
+		break;
+	}
+	case 3: { // SCSIBusInquiry
+		if (scsi_log) fprintf(scsi_log, "  BusInquiry: bus=%d\n", busNum);
+		if (busNum != 0 && busNum != 0xFF) {
+			WriteMacInt16(pb + 10, (uint16)(int16)-7869);
+			result = -7869;
+			if (scsi_log) { fprintf(scsi_log, "  RESULT: no such bus (0xE143)\n"); fflush(scsi_log); }
+			break;
+		}
+		if (busNum == 0xFF) WriteMacInt8(pb + 13, 0);
+		WriteMacInt16(pb + 36, 1);
+		WriteMacInt16(pb + 38, 0);
+		WriteMacInt32(pb + 40, 1);
+		WriteMacInt16(pb + 44, 164);
+		WriteMacInt16(pb + 46, 164);
+		WriteMacInt32(pb + 48, 0);
+		WriteMacInt8(pb + 52, 0x43);
+		WriteMacInt8(pb + 53, 0);
+		WriteMacInt8(pb + 68, 0);
+		WriteMacInt8(pb + 69, 7);
+		WriteMacInt16(pb + 84, 7);
+		WriteMacInt16(pb + 86, 0);
+		WriteMacInt16(pb + 10, 0);
+		result = 0;
+		if (scsi_log) { fprintf(scsi_log, "  RESULT: noErr\n"); fflush(scsi_log); }
+		break;
+	}
+	case 0x80: { // SCSIGetVirtualIDInfo
+		bool exists = scsi_is_target_present(targetID);
+		WriteMacInt16(pb + 36, targetID);
+		WriteMacInt8(pb + 38, exists ? 1 : 0);
+		WriteMacInt16(pb + 10, 0);
+		result = 0;
+		if (scsi_log) { fprintf(scsi_log, "  VirtualIDInfo: target=%d exists=%d\n", targetID, exists); fflush(scsi_log); }
+		break;
+	}
+	case 0x84: case 0x85: case 0x86: { // scsiOldCall variants
+		bool exists = scsi_is_target_present(targetID);
+		result = exists ? 0 : -7932;
+		WriteMacInt16(pb + 10, (uint16)(int16)result);
+		if (scsi_log) { fprintf(scsi_log, "  OldCall(0x%02x): target=%d exists=%d\n", functionCode, targetID, exists); fflush(scsi_log); }
+		break;
+	}
+	case 0: case 4: case 5: case 6: case 7: case 8:
+	case 16: case 17: case 18:
+		WriteMacInt16(pb + 10, 0);
+		result = 0;
+		break;
+	default:
+		WriteMacInt16(pb + 10, 0);
+		result = 0;
+		if (scsi_log) { fprintf(scsi_log, "  UNHANDLED func=0x%02x\n", functionCode); fflush(scsi_log); }
+		break;
+	}
+
+	if (scsi_log) {
+		int dumpSize = pbLength > 0 ? (pbLength < 256 ? pbLength : 256) : 176;
+		fprintf(scsi_log, "PB_AFTER[%d]:", dumpSize);
+		for (int i = 0; i < dumpSize; i++) {
+			if (i % 32 == 0) fprintf(scsi_log, "\n  %3d:", i);
+			fprintf(scsi_log, " %02x", ReadMacInt8(pb + i));
+		}
+		fprintf(scsi_log, "\n  result=%d\n", result);
+		fflush(scsi_log);
+	}
+
+	return result;
+}
+
+
+/*
  *  Execute EMUL_OP opcode (called by 68k emulator)
  */
 
@@ -355,73 +536,118 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			break;
 
 		case OP_SCSI_DISPATCH: {	// SCSIDispatch() replacement
+			static int scsi_disp_seq = 0;
+			scsi_disp_seq++;
 			uint32 ret = ReadMacInt32(r->a[7]);
 			uint16 sel = ReadMacInt16(r->a[7] + 4);
 			r->a[7] += 6;
-//			D(bug("SCSIDispatch(%d)\n", sel));
 			int stack;
 			switch (sel) {
 				case 0:		// SCSIReset
 					WriteMacInt16(r->a[7], SCSIReset());
+					fprintf(stderr, "SCSIDispatch[%d] Reset -> %d\n", scsi_disp_seq, ReadMacInt16(r->a[7]));
 					stack = 0;
 					break;
-				case 1:		// SCSIGet
-					WriteMacInt16(r->a[7], SCSIGet());
+				case 1: {	// SCSIGet
+					int16 res = SCSIGet();
+					WriteMacInt16(r->a[7], res);
+					fprintf(stderr, "SCSIDispatch[%d] Get -> %d\n", scsi_disp_seq, res);
 					stack = 0;
 					break;
+				}
 				case 2:		// SCSISelect
-				case 11:	// SCSISelAtn
-					WriteMacInt16(r->a[7] + 2, SCSISelect(ReadMacInt8(r->a[7] + 1)));
+				case 11: {	// SCSISelAtn
+					uint8 tgt = ReadMacInt8(r->a[7] + 1);
+					int16 res = SCSISelect(tgt);
+					WriteMacInt16(r->a[7] + 2, res);
+					fprintf(stderr, "SCSIDispatch[%d] %s target=%d -> %d\n", scsi_disp_seq,
+						sel == 2 ? "Select" : "SelAtn", tgt, res);
 					stack = 2;
 					break;
-				case 3:		// SCSICmd
-					WriteMacInt16(r->a[7] + 6, SCSICmd(ReadMacInt16(r->a[7]), Mac2HostAddr(ReadMacInt32(r->a[7] + 2))));
+				}
+				case 3: {	// SCSICmd
+					uint16 cmdLen = ReadMacInt16(r->a[7]);
+					uint8 *cmdPtr = Mac2HostAddr(ReadMacInt32(r->a[7] + 2));
+					fprintf(stderr, "SCSIDispatch[%d] Cmd len=%d CDB:", scsi_disp_seq, cmdLen);
+					for (int i = 0; i < cmdLen && i < 16; i++)
+						fprintf(stderr, " %02x", cmdPtr[i]);
+					int16 res = SCSICmd(cmdLen, cmdPtr);
+					WriteMacInt16(r->a[7] + 6, res);
+					fprintf(stderr, " -> %d\n", res);
 					stack = 6;
 					break;
-				case 4:		// SCSIComplete
-					WriteMacInt16(r->a[7] + 12, SCSIComplete(ReadMacInt32(r->a[7]), ReadMacInt32(r->a[7] + 4), ReadMacInt32(r->a[7] + 8)));
+				}
+				case 4: {	// SCSIComplete
+					uint32 timeout = ReadMacInt32(r->a[7]);
+					uint32 msgAddr = ReadMacInt32(r->a[7] + 4);
+					uint32 statAddr = ReadMacInt32(r->a[7] + 8);
+					int16 res = SCSIComplete(timeout, msgAddr, statAddr);
+					WriteMacInt16(r->a[7] + 12, res);
+					uint16 stat = ReadMacInt16(statAddr);
+					uint16 msg = ReadMacInt16(msgAddr);
+					fprintf(stderr, "SCSIDispatch[%d] Complete timeout=%d -> %d stat=%d msg=%d\n",
+						scsi_disp_seq, timeout, res, stat, msg);
 					stack = 12;
 					break;
+				}
 				case 5:		// SCSIRead
-				case 8:		// SCSIRBlind
-					WriteMacInt16(r->a[7] + 4, SCSIRead(ReadMacInt32(r->a[7])));
+				case 8: {	// SCSIRBlind
+					uint32 tibAddr = ReadMacInt32(r->a[7]);
+					int16 res = SCSIRead(tibAddr);
+					WriteMacInt16(r->a[7] + 4, res);
+					fprintf(stderr, "SCSIDispatch[%d] %s tib=0x%08x -> %d\n", scsi_disp_seq,
+						sel == 5 ? "Read" : "RBlind", tibAddr, res);
 					stack = 4;
 					break;
+				}
 				case 6:		// SCSIWrite
-				case 9:		// SCSIWBlind
-					WriteMacInt16(r->a[7] + 4, SCSIWrite(ReadMacInt32(r->a[7])));
+				case 9: {	// SCSIWBlind
+					uint32 tibAddr = ReadMacInt32(r->a[7]);
+					int16 res = SCSIWrite(tibAddr);
+					WriteMacInt16(r->a[7] + 4, res);
+					fprintf(stderr, "SCSIDispatch[%d] %s tib=0x%08x -> %d\n", scsi_disp_seq,
+						sel == 6 ? "Write" : "WBlind", tibAddr, res);
 					stack = 4;
 					break;
+				}
 				case 10:	// SCSIStat
 					WriteMacInt16(r->a[7], SCSIStat());
+					fprintf(stderr, "SCSIDispatch[%d] Stat -> 0x%04x\n", scsi_disp_seq, SCSIStat());
 					stack = 0;
 					break;
 				case 12:	// SCSIMsgIn
 					WriteMacInt16(r->a[7] + 4, 0);
+					fprintf(stderr, "SCSIDispatch[%d] MsgIn\n", scsi_disp_seq);
 					stack = 4;
 					break;
 				case 13:	// SCSIMsgOut
 					WriteMacInt16(r->a[7] + 2, 0);
+					fprintf(stderr, "SCSIDispatch[%d] MsgOut\n", scsi_disp_seq);
 					stack = 2;
 					break;
 				case 14:	// SCSIMgrBusy
 					WriteMacInt16(r->a[7], SCSIMgrBusy());
+					fprintf(stderr, "SCSIDispatch[%d] MgrBusy -> %d\n", scsi_disp_seq, ReadMacInt16(r->a[7]));
 					stack = 0;
 					break;
 				default:
-					printf("FATAL: SCSIDispatch: illegal selector\n");
+					fprintf(stderr, "SCSIDispatch[%d] UNKNOWN sel=%d\n", scsi_disp_seq, sel);
 					stack = 0;
-					//!! SysError(12)
 			}
+			fflush(stderr);
 			r->a[0] = ret;
 			r->a[7] += stack;
 			break;
 		}
 
-		case OP_SCSI_ATOMIC:		// SCSIAtomic() replacement
-			D(bug("SCSIAtomic\n"));
-			r->d[0] = (uint32)-7887;
+		case OP_SCSI_ATOMIC: {		// SCSIAction/SCSIAtomic replacement (68k callers)
+			uint32 pb = r->a[0];
+			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d\n",
+				pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14));
+			fflush(stderr);
+			r->d[0] = (uint32)HandleSCSIAction(pb);
 			break;
+		}
 
 		case OP_CHECK_SYSV: {		// Check we are not using MacOS < 8.1 with a NewWorld ROM
 			r->a[1] = r->d[1];

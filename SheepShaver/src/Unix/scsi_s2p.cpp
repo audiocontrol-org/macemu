@@ -410,14 +410,31 @@ bool scsi_send_cmd(size_t data_length, bool reading, int sg_size,
 
 	auto r = parse_scsi_result(result);
 	if (!r.ok) {
-		D(bug("scsi_s2p: SCSI_EXEC returned error\n"));
+		if (r.status != 0) {
+			D(bug("scsi_s2p: SCSI_EXEC failed but got SCSI status %d — returning as transport success\n", r.status));
+			*stat = r.status;
+			if (r.status == 2 && !r.sense_data.empty()) {
+				size_t copy_len = r.sense_data.size() < sizeof(sense_buffer) ? r.sense_data.size() : sizeof(sense_buffer);
+				memcpy(sense_buffer, r.sense_data.data(), copy_len);
+				have_sense = true;
+			}
+			return true;
+		}
+		D(bug("scsi_s2p: SCSI_EXEC returned error with no SCSI status\n"));
 		*stat = 2;
 		return false;
 	}
 
-	*stat = r.status << 1; // Mac SCSI status is shifted left by 1
+	*stat = r.status;
 
-	D(bug("scsi_s2p: status=%d, data_in=%zu bytes\n", r.status, r.data_in.size()));
+	fprintf(stderr, "scsi_s2p: cmd=%02x status=%d, data_in=%zu bytes\n", the_cmd[0], r.status, r.data_in.size());
+	if (!r.data_in.empty()) {
+		fprintf(stderr, "  RESP:");
+		for (size_t i = 0; i < r.data_in.size() && i < 64; i++)
+			fprintf(stderr, " %02x", r.data_in[i]);
+		fprintf(stderr, "\n");
+		fflush(stderr);
+	}
 
 	// Scatter response data back to S/G table
 	if (reading && !r.data_in.empty()) {
