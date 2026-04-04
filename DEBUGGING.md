@@ -301,10 +301,25 @@ The Plug's init scans via SCSIAction (INQUIRY), but the connection step (which w
 send CDB 0x09/0x0C/0x0D/0x0E via the Device Manager hooks) never happens. The gap 
 is between "INQUIRY found the S3000XL" and "initiate MIDI-over-SCSI session."
 
+## CONFIRMED ROOT CAUSE: PPC Device Manager bypasses 68k trap table
+
 The Plug patches _Read/_Write/_Control/_Status via _SetOSTrapAddress during its 68k 
-INIT code. On PPC Mac (which SheepShaver emulates), PPC callers might bypass 68k 
-trap patches. The Plug's PPC code section may contain the actual connection logic 
-that we haven't been able to trace.
+INIT code. But SheepShaver's PPC Device Manager implementation does NOT route through 
+the 68k OS trap table. PPC applications (MESA II, ReCycle) call _Read/_Write/_Control 
+through PPC InterfaceLib stubs that go directly to the ROM's PPC Device Manager, 
+completely bypassing the Plug's 68k hooks.
+
+**Evidence:** 
+- _Control guard in OP_IDLE_TIME detects and restores the Plug's handler
+- ReCycle's "search for samplers" generates ZERO log entries on any path
+- Both MESA II and ReCycle are PPC applications
+- The Plug's trap patches work for 68k callers but are invisible to PPC callers
+- Confirmed with two different applications on two different disk images
+
+**Fix needed:** Make SheepShaver's PPC Device Manager route OS trap calls through 
+the 68k trap table, so the Plug's patches are visible to PPC callers. This is how 
+a real Power Mac works — the PPC trap dispatch reads the same trap table that 68k 
+code modifies. SheepShaver's implementation skips this step.
 
 ## Additional: s2p-midi SCSI_EXEC doesn't route to emulated devices
 
