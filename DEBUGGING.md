@@ -134,9 +134,20 @@ The Plug does NOT check Gestalt('mach'). The only Gestalt call in the dump is fo
 
 The function at dump offset 0x073E that calls the .EDisk check also reads XPRAM byte $00AF (value: 0x00 in current NVRAM) and calls Gestalt('ram '). The post-.EDisk code may use these values to make a further decision.
 
-### Theory F: XPRAM byte $00AF controls SCSI configuration
+### Theory F: XPRAM byte $00AF controls SCSI configuration (DISPROVEN)
 
-The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $A051 (_ReadXPRam) after the .EDisk check passes. On SheepShaver, this byte is 0x00. On a real Mac with SCSI, it might be non-zero (SCSI configuration flag). If the Plug gates on this value, it would explain why .EDisk is found but SCSI is still "not available."
+The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $A051 (_ReadXPRam) after the .EDisk check passes. On SheepShaver, this byte is 0x00. Set it to 0x01 during InstallDrivers via _WriteXPRam. No change in behavior — still "Not Online", still only INQUIRY CDBs.
+
+### Summary of disproven theories
+
+| Theory | What | Result |
+|--------|------|--------|
+| A | Gestalt('mach') timing | Native value 0x43 already passes <= 0x7E check |
+| B | OldCall 0x86 incomplete | Not tested yet |
+| C | BusInquiry fields wrong | Fixed initiatorID to 7, no change |
+| D | .EDisk DRVR missing | Already exists in resource chain (handle 0x10011d5c) |
+| E | Plug not loaded | Plug IS loaded — SCSI scans happen, "Use MIDI" grayed |
+| F | XPRAM byte $AF | Set to 0x01, no change |
 
 ### Theory E: SCSI Plug never loaded / initialized correctly (LESS LIKELY)
 The SCSI Plug is a system extension. The SCSI scans DO happen through SCSI Manager 4.3, and "Use MIDI" is grayed out (indicating the Plug detected SCSI capability). So the Plug IS active — it just fails the ".EDisk" check.

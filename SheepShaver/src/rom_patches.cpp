@@ -2525,6 +2525,19 @@ void InstallDrivers(void)
 			fflush(stderr);
 		}
 	}
+
+	// Write XPRAM byte $AF = 0x01 (SCSI configuration flag?)
+	// The Plug's capability function reads this via _ReadXPRam ($A051).
+	// On SheepShaver it's 0x00; on real SCSI Macs it may be non-zero.
+	{
+		uint32 xpram_buf = scsi_globals + 0xFC0;
+		WriteMacInt8(xpram_buf, 0x01);  // value to write
+		r.a[0] = xpram_buf;
+		r.d[0] = 0x000100AF;  // count=1, offset=$AF
+		Execute68kTrap(0xa052, &r);  // _WriteXPRam
+		fprintf(stderr, "WriteXPRam($AF) = 0x01\n");
+		fflush(stderr);
+	}
 #endif
 
 	// Install floppy driver
