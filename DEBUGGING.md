@@ -118,7 +118,7 @@ Our BusInquiry response has:
 - `scsiFeatureFlags = 0` (real Macs advertise capabilities)
 - The Plug might validate these fields.
 
-### Theory D: Plug checks for ".EDisk" DRVR resource (CONFIRMED — likely root cause)
+### Theory D: Plug checks for ".EDisk" DRVR resource (DISPROVEN)
 
 Disassembly of the Plug's SCSI capability check (at dump offset 0x06BE) reveals:
 
@@ -130,26 +130,13 @@ If this returns NULL (no such resource), the function returns 0 and the Plug dec
 
 The Plug does NOT check Gestalt('mach'). The only Gestalt call in the dump is for 'ram ' (installed RAM), not 'mach'.
 
-**Key question:** What is ".EDisk"? Possibilities:
-1. An Apple SCSI driver that exists on real Macs with SCSI hardware
-2. A driver installed by MESA II's installer that we're missing
-3. A driver the Plug itself tries to install during extension loading
+**DISPROVEN:** Verification via GetNamedResource during InstallDrivers returned 0x10011d5c (non-NULL). The ".EDisk" DRVR already exists in the System file resource chain. Our AddResource was unnecessary. The Plug's GetNamedResource call succeeds natively — this is NOT the blocker.
 
-".EDisk" IS the Apple SCSI hard disk driver — found 23 times on the disk image alongside `.AppleCD`, `.Sony`, `.ATADisk`, `.ATDrvr`. It's a standard Mac OS SCSI driver, but SheepShaver doesn't load it because it has no real SCSI hardware.
+The function at dump offset 0x073E that calls the .EDisk check also reads XPRAM byte $00AF (value: 0x00 in current NVRAM) and calls Gestalt('ram '). The post-.EDisk code may use these values to make a further decision.
 
-**Attempted fix: AddResource during InstallDrivers**
+### Theory F: XPRAM byte $00AF controls SCSI configuration
 
-Added a fake ".EDisk" DRVR via `AddResource('DRVR', 128, "\p.EDisk")` during InstallDrivers. The call succeeds (no crash, handle allocated at 0x10000b80). But MESA II still shows "Not Online" after boot.
-
-**Also attempted: memory patch of Plug's beq.s**
-
-The idle hook scans Mac memory for the pattern `285f200c67047e01` and NOPs the `beq.s` at offset +4. Pattern found at 0x1014f0c6. But this runs too late — the Plug already cached its decision during extension loading.
-
-**Remaining questions:**
-1. Did AddResource actually add to the right resource file? During InstallDrivers, what's the current resource file?
-2. Does the Plug use `GetNamedResource` or something else at trap $A820?
-3. Is there a second check after ".EDisk" that also fails?
-4. Can we intercept the Plug's actual initialization to see what fails?
+The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $A051 (_ReadXPRam) after the .EDisk check passes. On SheepShaver, this byte is 0x00. On a real Mac with SCSI, it might be non-zero (SCSI configuration flag). If the Plug gates on this value, it would explain why .EDisk is found but SCSI is still "not available."
 
 ### Theory E: SCSI Plug never loaded / initialized correctly (LESS LIKELY)
 The SCSI Plug is a system extension. The SCSI scans DO happen through SCSI Manager 4.3, and "Use MIDI" is grayed out (indicating the Plug detected SCSI capability). So the Plug IS active — it just fails the ".EDisk" check.
@@ -189,7 +176,7 @@ The specific changes that cause the hang:
 
 ## Next Steps
 
-1. **Verify AddResource is reaching the Plug** — add tracing to confirm GetNamedResource finds our fake DRVR. May need to use `UseResFile` to ensure the resource is in the right file.
-2. **Try patching the disk image** — add a real ".EDisk" DRVR resource to the System file on the HFS image (requires HFS tools).
-3. **Alternative: intercept $A820 trap** — replace the trap with a handler that returns a non-NULL handle when called with 'DRVR'/".EDisk", bypassing the Resource Manager entirely. This avoids resource chain issues.
-4. If ".EDisk" fix works, proceed to capture MESA II's MIDI-over-SCSI traffic.
+1. **Test XPRAM byte $00AF** — set XPRAM byte $AF to non-zero during InstallDrivers and check if the Plug's behavior changes.
+2. **Fully disassemble the Plug's capability function** — understand every check between .EDisk and the final return value.
+3. **Trace the Plug's actual decision** — add an emulation op at the Plug's function entry/exit to log what it returns at runtime.
+4. **Compare with MESA I on OS 7** — MESA I connects via Old SCSI Manager. The difference between MESA I (works) and MESA II (doesn't) is the SCSI Plug. Understanding why MESA I's simpler path works may reveal what the Plug needs.

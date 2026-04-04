@@ -2505,6 +2505,21 @@ void InstallDrivers(void)
 			Execute68k(stub, &r);
 			fprintf(stderr, "  AddResource('.EDisk' DRVR) handle=0x%08x done\n", h);
 			fflush(stderr);
+
+			// Verify: can we find it via GetNamedResource?
+			// Build stub: subq.l #4,sp / move.l #'DRVR',-(sp) / pea name / _GetNamedResource($A820) / move.l (sp)+,d0 / rts
+			uint32 verify_stub = scsi_globals + 0xFA0;
+			WriteMacInt16(verify_stub + 0,  0x598F);       // subq.l #4,sp
+			WriteMacInt16(verify_stub + 2,  0x2F3C);       // move.l #'DRVR',-(sp)
+			WriteMacInt32(verify_stub + 4,  0x44525652);
+			WriteMacInt16(verify_stub + 8,  0x2F09);       // move.l a1,-(sp) (name ptr)
+			WriteMacInt16(verify_stub + 10, 0xA820);       // _GetNamedResource (or _GetResource variant)
+			WriteMacInt16(verify_stub + 12, 0x201F);       // move.l (sp)+,d0
+			WriteMacInt16(verify_stub + 14, 0x4E75);       // rts
+			r.a[1] = name_ptr;
+			Execute68k(verify_stub, &r);
+			fprintf(stderr, "  GetNamedResource('DRVR','.EDisk') -> 0x%08x\n", r.d[0]);
+			fflush(stderr);
 		} else {
 			fprintf(stderr, "WARNING: Failed to allocate handle for .EDisk DRVR\n");
 			fflush(stderr);
