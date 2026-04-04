@@ -151,6 +151,29 @@ The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $
 | G | Pre-init MIDI session (CDB 0x09) | Sent during SCSIInit, S3000XL accepted (status=0), no change |
 | H | Patch INQUIRY byte 5 bit 5 | Set bit 5 (0x20) in INQUIRY response byte 5, no change |
 | I | Implement OldCall 0x86 with TUR | OldCall now sends TEST UNIT READY (status=0 for target 6), no change |
+| J | Mount Akai disk images via s2p | s2p has HD0-HD7.hds mounted at IDs 0-5,7. SCSI_EXEC to emulated targets returns status=255 (not supported by s2p-midi). BUT: MESA II now shows errors -13003 and -14000! |
+
+## MESA II Error Codes (from MESA documentation)
+
+Source: `~/tmp/Error Codes copy`
+
+| Code | Define | Meaning |
+|------|--------|---------|
+| -13003 | err_ReplyLength | MIDI reply had wrong length |
+| -14000 | err_scsiUnitRange | SCSI unit out of range |
+| -12000 | err_MIDITimedOut | MIDI timed out |
+| -12001 | err_NoSamplerThere | No sampler found at target |
+| -12002 | err_WrongTypeOfSampler | Wrong sampler type |
+| -14001 | err_scsiStatus | SCSI status error |
+| -14002 | err_scsiBusBusy | SCSI bus busy |
+
+### Error -13003 (err_ReplyLength)
+This is a CAkaiMIDIDispatcher error, not a CSCSIUtils error. It means MESA sent a MIDI message and got a reply with an unexpected length. This could be from:
+1. The MIDI-over-SCSI path (CDB 0x0D poll returning wrong byte count)
+2. The standard MIDI path (OMS) — but there's no MIDI interface in this OS 9 instance
+
+### Error -14000 (err_scsiUnitRange)
+CSCSIUtils error — SCSI unit ID is out of the valid range. This fires when the Plug tries to access emulated disk targets that our SCSI_EXEC can't reach (s2p-midi returns status 255 for emulated devices).
 
 ## Detailed Disassembly of Plug Function 0x10FC
 
