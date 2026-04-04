@@ -272,7 +272,26 @@ extension loading. The Plug finds the S3000XL but something in post-scan process
 fails, and it caches "no samplers found." All subsequent Find Sampler calls return 
 the cached result instantly.
 
-## Root Cause: s2p-midi SCSI_EXEC doesn't route to emulated devices
+## ROOT CAUSE FOUND: Plug uses Device Manager, not SCSI Manager
+
+The SCSI Plug sends MIDI-over-SCSI commands via **Mac Device Manager** calls 
+(`_Read`, `_Write`, `_Control`, `_Status`) to the ".EDisk" SCSI driver — NOT through 
+the SCSI Manager (SCSIAction/SCSIAtomic/SCSIDispatch). Found at Plug dump offsets:
+- 0x0D1E: `_Read` (A002)
+- 0x0D28: `_Write` (A003)  
+- 0x0D32: `_Control` (A004)
+- 0x0D3C: `_Status` (A005)
+
+This completely bypasses our HandleSCSIAction and SCSIDispatch intercepts. The ".EDisk" 
+driver exists in the System file but isn't a functional SCSI driver on SheepShaver — 
+it's a stub. When the Plug sends commands through it, the driver returns garbage, 
+causing -13003 (err_ReplyLength).
+
+**Fix needed:** Provide a functional SCSI driver that translates Device Manager 
+_Read/_Write/_Control calls into our scsi_send_cmd() backend. OR intercept the 
+Device Manager traps to catch calls to the SCSI driver.
+
+## Additional: s2p-midi SCSI_EXEC doesn't route to emulated devices
 
 `ProcessScsiQueue()` in `command_dispatcher.cpp` always creates an `InitiatorExecutor` 
 that talks to the physical SCSI bus. For emulated SCHD targets (IDs 0-5, 7), there's 
