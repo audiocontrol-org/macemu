@@ -250,6 +250,22 @@ void ScriptHookIdle()
 					uint32 plug_base = pattern_addr - 0x06EC;
 					fprintf(stderr, "SCSI Plug found: pattern at 0x%08x, base at 0x%08x\n",
 						pattern_addr, plug_base);
+
+					// Check if the Plug's trap patches are installed
+					// OS trap table is at low memory 0x0400, each entry is 4 bytes
+					// _Read = A002 → trap table at 0x0400 + 2*4 = 0x0408
+					// _Write = A003 → 0x040C
+					// _Control = A004 → 0x0410
+					// _Status = A005 → 0x0414
+					uint32 read_handler = ReadMacInt32(0x0400 + 0x02 * 4);
+					uint32 write_handler = ReadMacInt32(0x0400 + 0x03 * 4);
+					uint32 control_handler = ReadMacInt32(0x0400 + 0x04 * 4);
+					uint32 status_handler = ReadMacInt32(0x0400 + 0x05 * 4);
+					fprintf(stderr, "  OS trap table: _Read=0x%08x _Write=0x%08x _Control=0x%08x _Status=0x%08x\n",
+						read_handler, write_handler, control_handler, status_handler);
+					fprintf(stderr, "  Expected Plug handlers: _Read=0x%08x _Write=0x%08x _Control=0x%08x _Status=0x%08x\n",
+						plug_base + 0x0D60, plug_base + 0x0D94, plug_base + 0x0E20, plug_base + 0x0DC8);
+					fflush(stderr);
 					hook_log("SCSI Plug base at 0x%08x", plug_base);
 
 					// Dump Plug code to shared folder for offline analysis
