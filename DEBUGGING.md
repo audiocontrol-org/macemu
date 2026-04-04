@@ -15,329 +15,140 @@ SheepShaver (Docker, linux/amd64 via QEMU on Apple Silicon)
 
 ## Repository Layout
 
-- **Main fork:** `/Users/orion/work/scsi2pi-work/macemu` (branch `feature/scsi-network-bridge`)
-  - Full ROM patches, breaks OS 7 boot, used for OS 9 container on port 16080
-- **Minimal fork:** `/Users/orion/work/scsi2pi-work/macemu-os9-minimal` (branch `os9-minimal`)
-  - Started from commit `8f67ef4e` (no ROM/thunk patches)
-  - Added: HandleSCSIAction, SCSIDispatch tracing, Gestalt patches, SHUTDOWN command, PPC thunks
-  - Boots both OS 7 and OS 9
+- **macemu fork:** `/Users/orion/work/scsi2pi-work/macemu-os9-minimal` (branch `os9-minimal`)
+- **scsi2pi fork:** `/Users/orion/work/scsi2pi-work/scsi2pi` (branch `feature/midi-processor`)
+- **Container:** `sheepshaver-os9-minimal` on port 16082 (VNC: `vnc://localhost:16082`)
 
-## Docker Containers
+## Current State: ROOT CAUSE IDENTIFIED
 
-| Container | Port | Disk | Source | Purpose |
-|-----------|------|------|--------|---------|
-| `sheepshaver-dev` | 16080 | OS 9 (sheepshaver-data/disk.hfv) | macemu (full fork) | Original OS 9 + MESA II |
-| `sheepshaver-os9-minimal` | 16082 | OS 9 (sheepshaver-data/disk.hfv) | macemu-os9-minimal | Minimal patches for MESA II debugging |
+### The Problem
 
-All containers need `--privileged` for `vm.mmap_min_addr=0`.
+PPC applications (MESA II, ReCycle) cannot communicate with SCSI samplers because the SCSI Plug's Device Manager trap hooks are invisible to PPC code on SheepShaver.
+
+### How It Works on a Real Mac
+
+1. The SCSI Plug (system extension) patches `_Read`, `_Write`, `_Control`, `_Status` OS traps via `_SetOSTrapAddress` during its 68k INIT code
+2. The Plug's hooks intercept Device Manager calls to the SCSI driver
+3. When an app calls `_Control` to send a SCSI command, the Plug's hook handles MIDI-over-SCSI
+4. On a real PPC Mac, the ROM's PPC Device Manager reads the 68k trap table and calls patched handlers through Mixed Mode
+
+### How It Fails on SheepShaver
+
+1. The Plug installs its 68k trap patches correctly (verified: trap table entries point to Plug handlers)
+2. **But:** SheepShaver's PPC code path for Device Manager calls does NOT properly route through the patched 68k trap table
+3. The ROM at 0x140EF8/0x140F44/0x140F90 loads the 68k handler address via `lwz r4,0x0410(r0)` and calls a Mixed Mode dispatcher at 0x140EE0
+4. The Mixed Mode dispatcher fails to properly call the 68k handler — it tries to execute the address as PPC code, hitting illegal instructions
+
+### Evidence
+
+- MESA II's SCSI Plug IS loaded at ~0x1014E9DA, patches _Read/_Write/_Status correctly
+- _Control patch gets overwritten by another extension (at ~0x1090xxxx), but even restoring it doesn't help
+- The Plug's INIT scan via SCSIAction (INQUIRY) works — finds S3000XL
+- "Find Sampler" returns instantly (cached "no samplers") — Plug decided at init time
+- Clicking SCSI icon in Disk window → error -13003 (err_ReplyLength) but ZERO new scsi_send_cmd calls
+- ReCycle (different app, different disk image) has the same behavior — zero SCSI commands from its sampler search
+- System Profiler correctly enumerates all SCSI devices (uses SCSIAction, which DOES work)
+- Patching the ROM's `bl 0x140EE0` to a native handler confirmed: handler IS called with correct PB, but calling Execute68k with the PPC handler address crashes, and calling Execute68kTrap(A004) causes infinite loop
+
+### The Plug's Trap Patches (from binary analysis)
+
+Located at Plug dump offset 0x0D18:
+```
+lea (pc+0x46),a0     → handler for _Read at Plug+0x0D60
+move.w #$A002,d0     
+_SetOSTrapAddress     ; patch _Read
+
+lea (pc+0x70),a0     → handler for _Write at Plug+0x0D94
+move.w #$A003,d0
+_SetOSTrapAddress     ; patch _Write
+
+lea (pc+0xF2),a0     → handler for _Control at Plug+0x0E20
+move.w #$A004,d0
+_SetOSTrapAddress     ; patch _Control
+
+lea (pc+0x90),a0     → handler for _Status at Plug+0x0DC8
+move.w #$A005,d0
+_SetOSTrapAddress     ; patch _Status
+```
+
+### ROM PPC _Control Dispatch (3 identical sites)
+
+At ROM 0x140EF8:
+```
+mfspr r0, LR
+lwz   r4, 0x0410(r0)    ; load _Control handler from 68k trap table
+stwu  r1, -64(r1)
+stw   r0, 0x48(r1)
+...
+addi  r3, r4, 0          ; r3 = handler addr
+addi  r6, r3, 0          ; r6 = PB (from original r3)
+...
+bl    0x140EE0           ; call Mixed Mode dispatcher ← THIS FAILS
+```
 
 ## What Works
 
-1. **SCSI network backend** — SheepShaver forwards SCSI commands to s2p over TCP
-2. **Old SCSI Manager (SCSIDispatch)** — Fully instrumented, all calls logged with sequence numbers to stderr
-3. **SCSI Manager 4.3 (SCSIAtomic/SCSIAction)** — HandleSCSIAction processes ExecIO, BusInquiry, etc., logged to scsi_trace.log
-4. **INQUIRY** — S3000XL found at target 6, returns `AKAI EMIS3000XL SAMPLER 2.00`
-5. **scsi_s2p fixes** — Removed incorrect `<< 1` status shift; CHECK CONDITION returns transport success
-6. **SHUTDOWN command** — Write `SHUTDOWN` to `{extfs}/command.txt` for clean shutdown
-7. **MESA I on OS 7** — Does NOT connect. TUR + INQUIRY succeed at SCSI level but MESA I does not establish a sampler connection.
-8. **PPC SCSIAction thunks** — 5 thunks patched at ROM 0x150000-0x170000, confirmed in stderr
-9. **Gestalt('scsi')** — Registered in InstallDrivers, returns gestaltAsyncSCSI flags
-10. **ROM+0x12** — Patched from 0x28F1 to 0x2AF2
+1. **SCSI network backend** — scsi_send_cmd forwards to s2p over TCP
+2. **SCSI Manager 4.3 (SCSIAction)** — HandleSCSIAction + PPC thunks work
+3. **Old SCSI Manager (SCSIDispatch)** — 68k path fully instrumented
+4. **INQUIRY** — S3000XL found at target 6 by both Plug and System Profiler
+5. **s2p emulated devices** — SCSI_EXEC now routes to emulated SCHD targets (fixed in scsi2pi)
+6. **scsiDataResidual** — correctly computed from actual bytes transferred
+7. **OldCall 0x86** — sends TEST UNIT READY to real targets
 
-## What Doesn't Work
+## Disproven Theories
 
-### MESA II "Not Online" — finds S3000XL but never sends MIDI-over-SCSI
-
-MESA II (v1.2, OS 9) finds the S3000XL during SCSI scan (INQUIRY succeeds, both 36-byte and 96-byte). But shows "Not Online" and never sends MIDI-over-SCSI commands (CDB 0x09 init, 0x0C send, 0x0D poll, 0x0E read).
-
-Both forks (full and minimal) exhibit identical behavior.
-
-## Fixes Applied This Session
-
-### 1. scsiDataResidual (FIXED)
-
-ExecIO always set `scsiDataResidual = 0` even when the device returned fewer bytes than requested. For the 96-byte INQUIRY, S3000XL returns only 37 bytes but we told the caller all 96 bytes were valid. This caused the caller to read 59 bytes of memory garbage as if it were device data.
-
-**Fix:** Added `size_t *actual_transferred` parameter to `scsi_send_cmd()`. The ExecIO handler now computes `scsiDataResidual = dataLength - actual`. Confirmed working in trace: `residual=60 (actual=36/96)` for the 96-byte INQUIRY.
-
-Files changed: `scsi.h`, `scsi_s2p.cpp`, `emul_op.cpp`
-
-### 2. Gestalt('mach') timing investigation (REVERTED)
-
-**Theory:** The SCSI Plug checks Gestalt('mach') <= 0x7E at extension load time. Post-boot replacement via ScriptHookIdle is too late — the Plug has already cached "no SCSI."
-
-**Finding:** The original Gestalt('mach') value is **0x43** (Power Mac 7200). Since 0x43 < 0x7E, the Plug's check should already pass without any replacement. **This means Gestalt('mach') is NOT the blocking issue.**
-
-**What we tried (all reverted):**
-- Moved Gestalt('mach') replacement to InstallDrivers → triggered "This startup disk will not work on this Macintosh model" dialog
-- Counter-based handler (return original for first N calls, then 0x7E) with thresholds 2 and 5 → dialog still appeared because 'gbly' resource check uses Gestalt('mach') and 0x7E isn't a valid Power Mac type
-- Patched _StopAlert (A986) trap to suppress dialog → dialog still appeared because PPC boot code doesn't go through 68k trap table for alerts
-- Fixed _StopAlert stub with Pascal calling convention → still no effect, same reason
-
-**Conclusion:** Gestalt('mach') replacement is unnecessary (0x43 already passes the <= 0x7E check) and harmful (triggers boot validation failure). Reverted all Gestalt('mach') changes. The post-boot replacement in ScriptHookIdle was also removed.
-
-## SCSI Trace Analysis
-
-The saved trace (`scsi_trace_mesa2_discovery.log`, 750 lines) shows three scan rounds:
-
-### Round 1: SCSI Plug initial scan (targets 6→0)
-- OldCall 0x86 per target (presence check) + ExecIO INQUIRY (36 bytes)
-- Target 6: OldCall returns 0 (exists), INQUIRY returns S3000XL data
-- Other targets: OldCall returns -7932, INQUIRY returns scsiNoTarget
-
-### Round 2: Mac OS driver scan (targets 0→6)
-- ExecIO INQUIRY (36 bytes) only, no OldCall pre-check
-- Different PB addresses (0x10a99410, 0x109d4d90, 0x10a89b00)
-
-### Round 3: MESA II extended scan (targets 0→6)
-- ExecIO INQUIRY (96 bytes), different PB address (0x10e491a0)
-- Target 6: 36 bytes valid data + 60 bytes of garbage (before residual fix)
-
-### After all 3 rounds: ZERO additional SCSI calls
-
-No CDB 0x09, 0x0C, 0x0D, or 0x0E ever appears. The Plug finds the device but never initiates MIDI-over-SCSI communication.
-
-### Boot-time Old SCSI Manager activity (from stderr)
-
-During boot, Mac OS's disk driver probes via the Old SCSI Manager path:
-- SCSIGet → SCSISelect target=6 → SCSICmd CDB `08 00 00 00 01 00` (READ(6)) → SCSIRead → SCSIComplete stat=2 (CHECK CONDITION)
-- This is the disk driver checking if target 6 is a disk. CHECK CONDITION is correct — S3000XL is a processor device.
-- Scanning all other targets (5→0): SCSISelect returns 2 (scCommErr, target not present)
-
-## Theories About What's Blocking MESA II
-
-### Theory A: Gestalt('mach') timing (DISPROVEN)
-The Plug caches its decision at extension load time. **Disproven** — 0x43 (the native value) already satisfies <= 0x7E.
-
-### Theory B: OldCall 0x86 is incomplete
-Our handler only returns "target exists" without executing the embedded old-style SCSI command. A real Mac's SCSI Manager 4.3 translates OldCall into a full SCSIExecIO. The Plug might rely on OldCall actually executing a command (like TEST UNIT READY) and checking the result.
-
-### Theory C: BusInquiry response is wrong
-Our BusInquiry response has:
-- `scsiInitiatorID = 0` (real Macs use 7)
-- `scsiFeatureFlags = 0` (real Macs advertise capabilities)
-- The Plug might validate these fields.
-
-### Theory D: Plug checks for ".EDisk" DRVR resource (DISPROVEN)
-
-Disassembly of the Plug's SCSI capability check (at dump offset 0x06BE) reveals:
-
-```
-GetNamedResource('DRVR', "\p.EDisk")
-```
-
-If this returns NULL (no such resource), the function returns 0 and the Plug declares "no SCSI capability." This is the gate that prevents MIDI-over-SCSI initialization.
-
-The Plug does NOT check Gestalt('mach'). The only Gestalt call in the dump is for 'ram ' (installed RAM), not 'mach'.
-
-**DISPROVEN:** Verification via GetNamedResource during InstallDrivers returned 0x10011d5c (non-NULL). The ".EDisk" DRVR already exists in the System file resource chain. Our AddResource was unnecessary. The Plug's GetNamedResource call succeeds natively — this is NOT the blocker.
-
-The function at dump offset 0x073E that calls the .EDisk check also reads XPRAM byte $00AF (value: 0x00 in current NVRAM) and calls Gestalt('ram '). The post-.EDisk code may use these values to make a further decision.
-
-### Theory F: XPRAM byte $00AF controls SCSI configuration (DISPROVEN)
-
-The Plug's capability function (dump 0x073E) reads XPRAM offset $00AF via trap $A051 (_ReadXPRam) after the .EDisk check passes. On SheepShaver, this byte is 0x00. Set it to 0x01 during InstallDrivers via _WriteXPRam. No change in behavior — still "Not Online", still only INQUIRY CDBs.
-
-### Summary of disproven theories
-
-| Theory | What | Result |
-|--------|------|--------|
+| # | Theory | Result |
+|---|--------|--------|
 | A | Gestalt('mach') timing | Native value 0x43 already passes <= 0x7E check |
-| B | OldCall 0x86 incomplete | Not tested yet |
+| B | OldCall 0x86 incomplete | Implemented TUR, no change |
 | C | BusInquiry fields wrong | Fixed initiatorID to 7, no change |
-| D | .EDisk DRVR missing | Already exists in resource chain (handle 0x10011d5c) |
-| E | Plug not loaded | Plug IS loaded — SCSI scans happen, "Use MIDI" grayed |
+| D | .EDisk DRVR missing | Already exists in resource chain |
+| E | Plug not loaded | Plug IS loaded and scans via SCSIAction |
 | F | XPRAM byte $AF | Set to 0x01, no change |
-| G | Pre-init MIDI session (CDB 0x09) | Sent during SCSIInit, S3000XL accepted (status=0), no change |
-| H | Patch INQUIRY byte 5 bit 5 | Set bit 5 (0x20) in INQUIRY response byte 5, no change |
-| I | Implement OldCall 0x86 with TUR | OldCall now sends TEST UNIT READY (status=0 for target 6), no change |
-| J | Mount Akai disk images via s2p | s2p has HD0-HD7.hds mounted at IDs 0-5,7. SCSI_EXEC to emulated targets returns status=255 (not supported by s2p-midi). BUT: MESA II now shows errors -13003 and -14000! |
+| G | Pre-init MIDI session | S3000XL accepted CDB 0x09, no change |
+| H | INQUIRY byte 5 bit 5 | Patched, no change |
+| I | OldCall with TUR | Status=0 for target 6, no change |
+| J | _Control trap overwrite | Restored via guard, but PPC still bypasses |
 
-## MESA II Error Codes (from MESA documentation)
+## MESA II Error Codes
 
 Source: `~/tmp/Error Codes copy`
 
-| Code | Define | Meaning |
-|------|--------|---------|
-| -13003 | err_ReplyLength | MIDI reply had wrong length |
-| -14000 | err_scsiUnitRange | SCSI unit out of range |
-| -12000 | err_MIDITimedOut | MIDI timed out |
-| -12001 | err_NoSamplerThere | No sampler found at target |
-| -12002 | err_WrongTypeOfSampler | Wrong sampler type |
-| -14001 | err_scsiStatus | SCSI status error |
-| -14002 | err_scsiBusBusy | SCSI bus busy |
+| Code | Define | Category | Meaning |
+|------|--------|----------|---------|
+| -13003 | err_ReplyLength | CAkaiMIDIDispatcher | MIDI reply wrong length |
+| -14000 | err_scsiUnitRange | CSCSIUtils | SCSI unit out of range |
+| -12001 | err_NoSamplerThere | CAkaiSampler | No sampler at target |
+| -12002 | err_WrongTypeOfSampler | CAkaiSampler | Wrong sampler type |
 
-### Error -13003 (err_ReplyLength)
-This is a CAkaiMIDIDispatcher error, not a CSCSIUtils error. It means MESA sent a MIDI message and got a reply with an unexpected length. This could be from:
-1. The MIDI-over-SCSI path (CDB 0x0D poll returning wrong byte count)
-2. The standard MIDI path (OMS) — but there's no MIDI interface in this OS 9 instance
+## Disk Images
 
-### Error -14000 (err_scsiUnitRange)
-CSCSIUtils error — SCSI unit ID is out of the valid range. This fires when the Plug tries to access emulated disk targets that our SCSI_EXEC can't reach (s2p-midi returns status 255 for emulated devices).
-
-## Detailed Disassembly of Plug Function 0x10FC
-
-This is the INQUIRY result handler. Parameters:
-- a3 = caller's a4 (from 0x12AA: first param = a4 from ITS caller)
-- a4 = caller's a3 (from 0x12AA: second param)
-
-```
-0x110C: moveq #7,d0
-0x110E: and.w (a4+6),d0       ; d7 = low 3 bits of word at a4+6
-0x1116: moveq #0x20,d0
-0x1118: and.w (a3+4),d0       ; d1 = bit 5 of word at a3+4
-0x1120: tst.l d1
-0x1122: bne.s 0x1130           ; if d1 != 0, continue to device type check
-        → ERROR: stores -28 in (a4+16), returns 0xE4
-
-0x1130: d0 = d7 - 2
-0x1134: if d7 < 2 → skip to 0x11A0
-0x1136: if d7 > 5 → skip to 0x11A0
-        → Jump table for d7 values 2-5 (device types?)
-
-0x1150: (d7=2 or 3): handler for Processor/Tape types
-```
-
-**CRITICAL UNKNOWN: what do a3 and a4 actually point to?**
-Assumed a3 = INQUIRY data, which would make (a3+4) = INQUIRY bytes 4-5 = 0x2000.
-0x2000 AND 0x0020 = 0 → FAILS. But patching byte 5 to 0x20 makes word = 0x2020,
-0x2020 AND 0x0020 = 0x0020 → PASSES. Yet MESA still shows "Not Online."
-
-This means either:
-1. a3 does NOT point to raw INQUIRY data (it points to a processed structure)
-2. The check passes but a later check fails
-3. The disassembly or offset calculation is wrong
-
-### Theory E: SCSI Plug never loaded / initialized correctly (DISPROVEN)
-The SCSI Plug IS loaded (found in memory at 0x1014E9DA) and IS active — it makes OldCall 0x86 and ExecIO INQUIRY calls during boot via SCSIAtomic (68k path, caller=0x101501DA). Note: "Use MIDI" is grayed because there's no MIDI interface in the OS 9 instance, NOT because the Plug detected SCSI.
+- **MESA II disk:** snapshot at `sheepshaver-data/disk-mesa2-snapshot-20260404.zip`
+- **ReCycle disk:** from `/Users/orion/Documents/SheepShaver/MacOS 9/Macintosh HD Recycle.zip`
+- **Akai disk images:** `/home/orion/images/HD0-HD7.hds` on s3k.local
 
 ## Key Files
 
-### macemu-os9-minimal
-- `SheepShaver/src/emul_op.cpp` — HandleSCSIAction, SCSIDispatch tracing, SCSIAtomic handler
-- `SheepShaver/src/Unix/scsi_s2p.cpp` — Network SCSI backend with residual fix
-- `SheepShaver/src/rom_patches.cpp` — ROM+0x12 patch, Gestalt('scsi') registration, PPC thunks
-- `SheepShaver/src/script_hook.cpp` — SHUTDOWN command (Gestalt('mach') replacement removed)
-- `SheepShaver/src/scsi.cpp` — Old SCSI Manager (SCSIGet/Select/Cmd/Read/Write/Complete)
-- `SheepShaver/src/include/scsi.h` — Backend function declarations
+### SheepShaver (macemu-os9-minimal)
+- `SheepShaver/src/emul_op.cpp` — HandleSCSIAction, SCSIDispatch, idle-time _Control guard
+- `SheepShaver/src/Unix/scsi_s2p.cpp` — Network SCSI backend
+- `SheepShaver/src/rom_patches.cpp` — ROM patches, PPC thunks, Gestalt registration
+- `SheepShaver/src/script_hook.cpp` — SHUTDOWN, Plug memory scanner
+- `SheepShaver/src/kpx_cpu/sheepshaver_glue.cpp` — NATIVE_SCSI_ACTION, NATIVE_CONTROL_DISPATCH
 
-### Pi (s3k.local)
-- `/tmp/s2p-midi` — Custom s2p build with SCSI_EXEC support
-- Start: `sudo /tmp/s2p-midi --port 6868`
-- s2pexec: `/opt/scsi2pi/bin/s2pexec -i 6 -c CDB`
+### scsi2pi (feature/midi-processor branch)
+- `cpp/command/command_dispatcher.cpp` — SCSI_EXEC with emulated device routing
 
 ### Logging
 - SheepShaver stderr → `/tmp/sheepshaver.log` (in container)
-- SCSI trace → `{extfs}/scsi_trace.log` (shared folder, created by HandleSCSIAction)
-- Script hook → `{extfs}/hook.log`
-- Saved traces → `sheepshaver-data/scsi_trace_mesa2_discovery.log`
-- PLUG binary dump → `sheepshaver-data/plug_memory.bin`
-
-## Bisect Results
-
-The commit that breaks OS 7: `25848e89` (SCSIAction handler with ROM patches).
-The last good commit for OS 7: `8f67ef4e` (automation hooks, no ROM patches).
-
-The specific changes that cause the hang:
-- ROM+0x12 header word modification
-- Trap 0xA089 redirection
-- PPC SCSIAction thunk rewriting (pattern scan at ROM 0x150000-0x170000)
-- Gestalt registration via Execute68kTrap during InstallDrivers
+- SCSI trace → `{extfs}/scsi_trace.log`
+- Plug binary dump → `sheepshaver-data/plug_full.bin` (32KB)
 
 ## Next Steps
 
-## Runtime Trace Results
+1. **Fix SheepShaver's Mixed Mode dispatch for Device Manager traps.** The ROM at 0x140EE0 calls a PPC function to dispatch through Mixed Mode. On SheepShaver, this doesn't work for 68k handler addresses from the trap table. Need to understand WHY the Mixed Mode call fails and fix it. This is the critical path.
 
-Inserted OP_PLUG_TRACE at the device type handler (dump 0x1150) and device state check (dump 0x115C). Key findings:
+2. **Alternative: install a PPC SCSI driver in the unit table** that handles _Read/_Write/_Control by calling our scsi_send_cmd backend directly. This bypasses the Plug entirely and provides SCSI I/O to PPC apps without needing Mixed Mode to work. More work but more reliable.
 
-- **devtype3_handler fires repeatedly** — 2445 times for type 2 (Tape), 3 times for type 3 (Processor/S3000XL). This is a continuous polling loop.
-- **a4 = 0x000003A4** — low-memory address, not a heap pointer. Should point to a per-device data structure. This value is suspicious and may indicate the Plug's data structures aren't properly initialized.
-- **Capability function traces never fired** — the cap_entry/cap_return/caller functions ran during extension loading (before idle hook installed traces). Their behavior cannot be observed post-boot.
-- **CAUTION**: Inserting OP_PLUG_TRACE replaces original instructions and breaks the Plug's behavior. The trace ops for devtype3_handler replaced `moveq #0,d0` (0x7000) and for devstate_check replaced `bne.s +16` (0x6610). These were removed.
-
-## Next Steps
-
-## Key Behavioral Observation
-
-On a real Mac, "Find Sampler..." takes noticeable time (tens to hundreds of ms) as the 
-Plug scans the SCSI bus, then shows a dialog listing found devices (e.g., "Bus 0, ID=6: 
-AKAI EMIS3200XL SAMPLER 2.00"). The user selects one and clicks OK.
-
-On our emulation, "Find Sampler..." returns **instantly** with no dialog — the Plug 
-returns a cached "no devices" result without scanning. This means the Plug decided at 
-extension load time that SCSI isn't viable and set a permanent "no SCSI" flag.
-
-The 3 rounds of INQUIRY in the SCSI trace are from the Plug's **init scan** during 
-extension loading. The Plug finds the S3000XL but something in post-scan processing 
-fails, and it caches "no samplers found." All subsequent Find Sampler calls return 
-the cached result instantly.
-
-## ROOT CAUSE FOUND: Plug uses Device Manager, not SCSI Manager
-
-The SCSI Plug sends MIDI-over-SCSI commands via **Mac Device Manager** calls 
-(`_Read`, `_Write`, `_Control`, `_Status`) to the ".EDisk" SCSI driver — NOT through 
-the SCSI Manager (SCSIAction/SCSIAtomic/SCSIDispatch). Found at Plug dump offsets:
-- 0x0D1E: `_Read` (A002)
-- 0x0D28: `_Write` (A003)  
-- 0x0D32: `_Control` (A004)
-- 0x0D3C: `_Status` (A005)
-
-This completely bypasses our HandleSCSIAction and SCSIDispatch intercepts. The ".EDisk" 
-driver exists in the System file but isn't a functional SCSI driver on SheepShaver — 
-it's a stub. When the Plug sends commands through it, the driver returns garbage, 
-causing -13003 (err_ReplyLength).
-
-**Fix needed:** Provide a functional SCSI driver that translates Device Manager 
-_Read/_Write/_Control calls into our scsi_send_cmd() backend. OR intercept the 
-Device Manager traps to catch calls to the SCSI driver.
-
-**Update:** Clicking SCSI icon in Disk window triggers -13003 errors WITHOUT any new 
-scsi_send_cmd calls. The Plug's Device Manager hook fires but fails internally 
-before attempting SCSI I/O. This is because the Plug never established a sampler 
-connection during init — the -13003 is a symptom of the missing initial connection, 
-not the root cause.
-
-The Plug's init scans via SCSIAction (INQUIRY), but the connection step (which would 
-send CDB 0x09/0x0C/0x0D/0x0E via the Device Manager hooks) never happens. The gap 
-is between "INQUIRY found the S3000XL" and "initiate MIDI-over-SCSI session."
-
-## CONFIRMED ROOT CAUSE: PPC Device Manager bypasses 68k trap table
-
-The Plug patches _Read/_Write/_Control/_Status via _SetOSTrapAddress during its 68k 
-INIT code. But SheepShaver's PPC Device Manager implementation does NOT route through 
-the 68k OS trap table. PPC applications (MESA II, ReCycle) call _Read/_Write/_Control 
-through PPC InterfaceLib stubs that go directly to the ROM's PPC Device Manager, 
-completely bypassing the Plug's 68k hooks.
-
-**Evidence:** 
-- _Control guard in OP_IDLE_TIME detects and restores the Plug's handler
-- ReCycle's "search for samplers" generates ZERO log entries on any path
-- Both MESA II and ReCycle are PPC applications
-- The Plug's trap patches work for 68k callers but are invisible to PPC callers
-- Confirmed with two different applications on two different disk images
-
-**Fix needed:** Make SheepShaver's PPC Device Manager route OS trap calls through 
-the 68k trap table, so the Plug's patches are visible to PPC callers. This is how 
-a real Power Mac works — the PPC trap dispatch reads the same trap table that 68k 
-code modifies. SheepShaver's implementation skips this step.
-
-## Additional: s2p-midi SCSI_EXEC doesn't route to emulated devices
-
-`ProcessScsiQueue()` in `command_dispatcher.cpp` always creates an `InitiatorExecutor` 
-that talks to the physical SCSI bus. For emulated SCHD targets (IDs 0-5, 7), there's 
-nothing on the physical bus at those IDs, so the command times out (status -1 → 255).
-
-**Fix:** In `ProcessScsiQueue()`, check `controller_factory.GetDeviceForIdAndLun(target_id, target_lun)`. 
-If non-null, route the CDB through the emulated device's command handler instead of the physical bus.
-
-**Evidence:** With Akai disk images mounted at IDs 0-5,7, MESA II shows errors -13003 
-(err_ReplyLength) and -14000 (err_scsiUnitRange) — proving the Plug IS trying to 
-communicate. Without disk images, only the S3000XL at ID 6 is found, and the Plug 
-silently shows "Not Online" with no errors.
-
-## Next Steps
-
-1. **Fix SCSI_EXEC for emulated devices** in scsi2pi command_dispatcher.cpp
-2. **Test with Akai disk images** — if MESA II can read them, the bridge works
-3. **Then investigate S3000XL "Not Online"** — may be a device-type issue (Processor vs Hard Disk)
-4. **Consider whether MESA II expects hard disk devices** — the Akai disk images are type 0 (Hard Disk), the S3000XL is type 3 (Processor). The Plug might only support disk-type devices for the "Disk" window.
+3. **Alternative: patch the Plug to use SCSIAction instead of Device Manager** for its MIDI-over-SCSI commands. Would require modifying the Plug's 68k code in memory.
