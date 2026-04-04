@@ -135,7 +135,21 @@ The Plug does NOT check Gestalt('mach'). The only Gestalt call in the dump is fo
 2. A driver installed by MESA II's installer that we're missing
 3. A driver the Plug itself tries to install during extension loading
 
-If ".EDisk" is a system SCSI driver, SheepShaver's emulated Power Mac might not have it because it doesn't emulate real SCSI hardware. We may need to provide this DRVR resource.
+".EDisk" IS the Apple SCSI hard disk driver — found 23 times on the disk image alongside `.AppleCD`, `.Sony`, `.ATADisk`, `.ATDrvr`. It's a standard Mac OS SCSI driver, but SheepShaver doesn't load it because it has no real SCSI hardware.
+
+**Attempted fix: AddResource during InstallDrivers**
+
+Added a fake ".EDisk" DRVR via `AddResource('DRVR', 128, "\p.EDisk")` during InstallDrivers. The call succeeds (no crash, handle allocated at 0x10000b80). But MESA II still shows "Not Online" after boot.
+
+**Also attempted: memory patch of Plug's beq.s**
+
+The idle hook scans Mac memory for the pattern `285f200c67047e01` and NOPs the `beq.s` at offset +4. Pattern found at 0x1014f0c6. But this runs too late — the Plug already cached its decision during extension loading.
+
+**Remaining questions:**
+1. Did AddResource actually add to the right resource file? During InstallDrivers, what's the current resource file?
+2. Does the Plug use `GetNamedResource` or something else at trap $A820?
+3. Is there a second check after ".EDisk" that also fails?
+4. Can we intercept the Plug's actual initialization to see what fails?
 
 ### Theory E: SCSI Plug never loaded / initialized correctly (LESS LIKELY)
 The SCSI Plug is a system extension. The SCSI scans DO happen through SCSI Manager 4.3, and "Use MIDI" is grayed out (indicating the Plug detected SCSI capability). So the Plug IS active — it just fails the ".EDisk" check.
@@ -175,7 +189,7 @@ The specific changes that cause the hang:
 
 ## Next Steps
 
-1. **Determine what ".EDisk" is** — search the Mac OS 9 disk image for this DRVR resource. Is it an Apple system driver? An Akai driver? Check if it exists on real Macs with SCSI.
-2. **Provide the ".EDisk" DRVR** — either find and install the real driver, or create a stub DRVR resource with that name so the Plug's GetNamedResource check passes.
-3. **Verify the theory** — add tracing around the GetNamedResource call to confirm it's returning NULL.
+1. **Verify AddResource is reaching the Plug** — add tracing to confirm GetNamedResource finds our fake DRVR. May need to use `UseResFile` to ensure the resource is in the right file.
+2. **Try patching the disk image** — add a real ".EDisk" DRVR resource to the System file on the HFS image (requires HFS tools).
+3. **Alternative: intercept $A820 trap** — replace the trap with a handler that returns a non-NULL handle when called with 'DRVR'/".EDisk", bypassing the Resource Manager entirely. This avoids resource chain issues.
 4. If ".EDisk" fix works, proceed to capture MESA II's MIDI-over-SCSI traffic.
