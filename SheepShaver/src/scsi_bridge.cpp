@@ -34,6 +34,9 @@
 #include "scsi_bridge.h"
 
 
+// Global call sequence counter for debugging
+static int call_seq = 0;
+
 // SCSI target for the HFS disk (hardcoded for now)
 static const int kSCSITargetID = 0;
 static const int kSCSITargetLUN = 0;
@@ -170,6 +173,11 @@ int16 SCSIBridgeOpen(uint32 pb, uint32 dce)
 
 int16 SCSIBridgePrime(uint32 pb, uint32 dce)
 {
+	// Full PB dump for debugging
+	fprintf(stderr, "SCSIBridgePrime pb=0x%08x dce=0x%08x PB:", pb, dce);
+	for (int i = 0; i < 50; i++) fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+	fprintf(stderr, "\n"); fflush(stderr);
+
 	WriteMacInt32(pb + ioActCount, 0);
 
 	// Determine read vs write from ioTrap
@@ -255,6 +263,15 @@ int16 SCSIBridgePrime(uint32 pb, uint32 dce)
 int16 SCSIBridgeControl(uint32 pb, uint32 dce)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
+	int seq = ++call_seq;
+
+	// Log ALL control calls except accRun (65) with sequence number
+	if (code != 65) {
+		int16 vRefNum = ReadMacInt16(pb + ioVRefNum);
+		int16 refNum = ReadMacInt16(pb + ioRefNum);
+		fprintf(stderr, "[%d] Control csCode=%d vRefNum=%d refNum=%d\n", seq, code, vRefNum, refNum);
+		fflush(stderr);
+	}
 
 	switch (code) {
 	case 1:   // KillIO
@@ -359,6 +376,15 @@ int16 SCSIBridgeControl(uint32 pb, uint32 dce)
 int16 SCSIBridgeStatus(uint32 pb, uint32 dce)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
+	int seq = ++call_seq;
+
+	// Log ALL status calls except driverGestalt (10) with sequence number
+	if (code != 10) {
+		int16 vRefNum = ReadMacInt16(pb + ioVRefNum);
+		int16 refNum = ReadMacInt16(pb + ioRefNum);
+		fprintf(stderr, "[%d] Status csCode=%d vRefNum=%d refNum=%d\n", seq, code, vRefNum, refNum);
+		fflush(stderr);
+	}
 
 	switch (code) {
 	case 6: {
