@@ -743,7 +743,7 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			uint32 caller = ReadMacInt32(r->a[7]);
 			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x a3=0x%08x\n",
 				pb, func, target, caller, r->a[4], r->a[3]);
-			// For ExecIO (func=1) to target 6, dump a6 stack frame to find device record
+			// For ExecIO (func=1) to target 6, dump frame chain AND dereference param pointers
 			if (func == 1 && target == 6) {
 				// a6 is the frame pointer. Scan up the frame chain to find
 				// the orchestrator's frame which has the device record.
@@ -753,10 +753,17 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 					uint32 saved_a6 = ReadMacInt32(frame);
 					uint32 ret_addr = ReadMacInt32(frame + 4);
 					fprintf(stderr, "  frame[%d] a6=0x%08x ret=0x%08x", fi, frame, ret_addr);
-					// Dump params at frame+8, frame+12, frame+16
 					if (frame + 16 < 0x20000000) {
-						fprintf(stderr, " params: %08x %08x %08x",
-							ReadMacInt32(frame + 8), ReadMacInt32(frame + 12), ReadMacInt32(frame + 16));
+						uint32 p1 = ReadMacInt32(frame + 8);
+						uint32 p2 = ReadMacInt32(frame + 12);
+						uint32 p3 = ReadMacInt32(frame + 16);
+						fprintf(stderr, " params: %08x %08x %08x", p1, p2, p3);
+						// For frame[0], dereference p1 if it looks like a pointer
+						if (fi == 0 && p1 > 0x1000 && p1 < 0x20000000) {
+							fprintf(stderr, "\n    *p1[0..47]:");
+							for (int j = 0; j < 48; j++)
+								fprintf(stderr, " %02x", ReadMacInt8(p1 + j));
+						}
 					}
 					fprintf(stderr, "\n");
 					frame = saved_a6;
