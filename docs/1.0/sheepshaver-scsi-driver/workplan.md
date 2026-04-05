@@ -30,7 +30,7 @@ Installed driver `.SCSI` at refNum -49 (`.EDisk` slot in unit table) with emulat
 - `SheepShaver/src/include/scsi_bridge.h`
 - `SheepShaver/src/scsi_bridge.cpp` (logging-mode handlers)
 
-### Phase 2: HFS Disk Mount (NEXT)
+### Phase 2: HFS Disk Mount (COMPLETE)
 
 Validate the driver can do real SCSI I/O by mounting an HFS disk image served by s2p.
 
@@ -76,6 +76,6 @@ Implement the Plug's SCSI protocol based on Phase 3 findings:
 ## Success Criteria
 
 - [ ] Phase 1: Driver installs and receives Device Manager traffic (DONE)
-- [ ] Phase 2: HFS disk image mounts in Mac OS 9
+- [x] Phase 2: HFS disk image mounts in Mac OS 9 (READ/WRITE verified with file copy)
 - [ ] Phase 3: Plug's _Control protocol discovered and documented
 - [ ] Phase 4: MESA II finds and communicates with S3000XL
