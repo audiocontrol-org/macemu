@@ -77,17 +77,27 @@ A 68k Mac OS device driver (`.SCSI` at refNum -50, `.EDisk` at refNum -49) is in
 - These are at DIFFERENT addresses (PEF loader separates code and data)
 - In-memory patching with `$ABFF` traps is possible but causes "◆P" warnings
 
-**NEW FINDING — likely root cause:**
-The `_SCSIDispatch` handler at ROM `base+22` contains `M68K_EMUL_OP_SCSI_DISPATCH` (0xFE7D) — an emulation op that only works in SheepShaver's native 68k context. When MESA's 68k Plug (running in Mixed Mode) calls `$A089`, the trap dispatcher jumps to this handler, hits the emulation op, and fails. This is the SAME problem as our Plug patching attempts (emulation ops crash in Mixed Mode with error type 12).
+**ROOT CAUSE IDENTIFIED:**
 
-The system SCSI driver works because it calls SCSIAction through PPC thunks (OP_SCSI_ATOMIC), bypassing the 68k trap entirely. MESA's 68k Plug is the only code that calls `$A089` as a 68k trap — and it fails.
+SheepShaver patches the ROM at `rom_patches.cpp:1469` to **disable the 68k exception table**:
+```
+Original ROM: addi r8,r1,0x360; mtspr ???,r8  (install 68k exception table)
+SheepShaver:  li r8,MODE_68K; stw r8,XLM_RUN_MODE  (skip exception table, set mode)
+```
 
-**The fix:** Replace the `_SCSIDispatch` handler with pure 68k code that works in Mixed Mode, then routes to our C handler through a mechanism that works in both contexts (e.g., writing to shared memory polled by idle handler, or calling through a PPC callback).
+This prevents Mixed Mode's 68k interpreter from dispatching A-line traps through the OS trap table at 0x0400. The patch is necessary for boot (native 68k uses emulation ops instead of real exception handlers), but breaks Mixed Mode 68k code.
 
-**Alternative approaches:**
-- Write a PPC wrapper PLUG that replaces the 68k SCSI Plug
-- Use SheepShaver's PPC instruction tracer for the MESA code range
-- Make the 68k trap handler call through the PPC SCSIAction path instead
+Additionally, `rom_patches.cpp:1405` disables virtual→physical address translation in the Mixed Mode trap handler, further preventing trap dispatch.
+
+**Architecture:**
+- SheepShaver's 68k emulator has two modes: EMUL_OP (Execute68k, emulation ops work) and native (ROM's 68k interpreter, exceptions disabled)
+- Mixed Mode 68k is a THIRD mode that needs the ROM's 68k interpreter WITH exceptions enabled
+- The ROM's opcode table at `ROMBase + 0x380000` dispatches 68k opcodes including A-line traps
+- Without the exception table active, A-line traps are silently dropped in Mixed Mode
+
+**The fix:** Restore the original ROM code that activates the 68k exception table. This may require making the emulation op handlers compatible with exception-based dispatch, or conditionally enabling the table only for Mixed Mode callers.
+
+**Current test:** Removing the patch at line 1469 causes boot failure (black screen). The exception table activation conflicts with SheepShaver's emulation. Need a conditional approach.
 
 ### Previous analysis (system SCSI driver — NOT MESA's Plug)
 
@@ -139,6 +149,11 @@ The binary at 0x1014EA0A is the **Mac OS system SCSI driver** (contains ".EDisk"
 | Z | Writing handler to OS trap table 0x0624 | Handler NOT reached from Mixed Mode. Marker test: wrote 0xDEADBEEF marker to handler, value stayed 0x00000000 after Find Sampler. Mixed Mode bypasses the OS trap table at 0x0400 |
 | AA | Force scsi43_flag=1 in Plug binary | MESA crashes — $A198 call at 0x071A is required for SCSI init |
 | AB | NOP both flag check and $A198 | MESA crashes during constructor — init functions depend on $A198 having run |
+| AC | JSR to emulation op handler from Plug | Emulation op still fails — 0xFExx not recognized by Mixed Mode 68k interpreter regardless of how it's reached |
+| AD | JSR to PPC stub from Plug | PPC instructions crash 68k interpreter — 68k can't execute PPC code |
+| AE | Replace $A089 with $A89F in Plug | Same result — Mixed Mode doesn't use OS trap table for ANY A-line trap |
+| AF | PPC stub at 0x0624 during ROM init | Crashes boot — 68k callers during boot DO use 0x0624 and can't execute PPC |
+| AG | Restore 68k exception table (remove rom_patches.cpp:1469 patch) | **TESTING** — black screen, OS doesn't boot |
 
 ## MESA II Error Codes
 

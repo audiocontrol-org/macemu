@@ -1469,6 +1469,9 @@ static bool patch_nanokernel(void)
 	lp = (uint32 *)(ROMBaseHost + base + 4);	// Don't activate 68k exception table
 	*lp++ = htonl(0x39000000 + MODE_68K);		// li	r8,MODE_68K
 	*lp = htonl(0x91000000 + XLM_RUN_MODE);		// stw	r8,XLM_RUN_MODE
+	// NOTE: This patch breaks Mixed Mode 68k A-line trap dispatch.
+	// Removing it causes boot failure (black screen).
+	// A conditional approach is needed — see DEBUGGING.md.
 
 	// Patch 68k emulator trap routine
 	static const uint8 restore_fpu_caller2_dat[] = {0x81, 0x86, 0x00, 0x8c, 0x80, 0x66, 0x00, 0x94, 0x80, 0x86, 0x00, 0x9c, 0x40};
