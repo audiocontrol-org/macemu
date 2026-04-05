@@ -1167,11 +1167,40 @@ void sheepshaver_cpu::execute_native_op(uint32 selector)
 	case NATIVE_SCSI_ACTION: {
 		extern int32 HandleSCSIAction(uint32 pb);
 		uint32 pb = gpr(3);
-		fprintf(stderr, "PPC_SCSIAction: pb=0x%08x func=%d target=%d lr=0x%08x\n",
-			pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14), lr());
-		fflush(stderr);
-		int32 result = HandleSCSIAction(pb);
-		gpr(3) = (uint32)result;
+		// Log all registers to find where a0 (PB) is when called via Mixed Mode UPP
+		static int ppc_scsi_log = 0;
+		if (ppc_scsi_log < 50) {
+			fprintf(stderr, "PPC_SCSIAction: r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x r8=%08x r9=%08x r10=%08x r11=%08x r12=%08x lr=%08x\n",
+				gpr(3), gpr(4), gpr(5), gpr(6), gpr(7), gpr(8), gpr(9), gpr(10), gpr(11), gpr(12), lr());
+			fflush(stderr);
+			ppc_scsi_log++;
+		}
+		// PB location depends on caller:
+		// - PPC thunks: r3 (already set by mr r3,r7 in stub)
+		// - CallUniversalProc: r3 (first C param from stack)
+		// - Direct PPC call: r3
+		// All paths should have PB in r3. Fall back to r7 for thunk compat.
+		if (pb < 0x1000 || pb > 0x20000000) {
+			pb = gpr(7);
+		}
+		if (pb >= 0x1000 && pb <= 0x20000000) {
+			uint8 func = ReadMacInt8(pb + 8);
+			if (func <= 128 || func == 134) {  // valid SCSIAction function codes
+				fprintf(stderr, "PPC_SCSIAction: pb=0x%08x func=%d target=%d\n",
+					pb, func, ReadMacInt8(pb + 14));
+				fflush(stderr);
+				int32 result = HandleSCSIAction(pb);
+				gpr(3) = (uint32)result;
+			} else {
+				fprintf(stderr, "PPC_SCSIAction: pb=0x%08x has invalid func=%d, returning 0\n", pb, func);
+				fflush(stderr);
+				gpr(3) = 0;
+			}
+		} else {
+			fprintf(stderr, "PPC_SCSIAction: no valid PB (r3=0x%08x), returning 0\n", gpr(3));
+			fflush(stderr);
+			gpr(3) = 0;
+		}
 		break;
 	}
 	case NATIVE_CONTROL_DISPATCH: {
