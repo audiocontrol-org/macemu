@@ -94,31 +94,44 @@ int32 HandleSCSIAction(uint32 pb)
 				if (match) {
 					uint32 plug_base = addr - 0x06EC;
 					uint32 patch_addr = plug_base + 0x115E;
-					uint16 orig = ReadMacInt16(patch_addr);
-					if (orig == 0x7000) {  // moveq #0,d0
-						// Don't patch — just instrument. Write OP_PLUG_TRACE at
-						// key return points to capture actual values.
-						//
-						// Instrument 0x11C6 (function exit): replace the first
-						// word of MOVEM.L restore with OP_PLUG_TRACE, then put
-						// the original word right after. This logs d0 (return value)
-						// and a4 (device record) at every exit from 0x10FC.
-						//
-						// BUT: we learned that OP_PLUG_TRACE replaces instructions
-						// and breaks behavior. Instead, log from HandleSCSIAction
-						// by tracking when the Plug's scan calls us and what the
-						// Plug does between calls.
-						fprintf(stderr, "*** Plug found at base=0x%08x\n", plug_base);
+					fprintf(stderr, "*** Plug found at base=0x%08x\n", plug_base);
 
-						// Dump the device record area: after the scan completes,
-						// the orchestrator writes to (a4+0x10). We can find device
-						// records by searching for ones with +0x10 set to 1 (found)
-						// and +0x06 low bits = 3 (Processor).
-						// Store plug_base for later use by idle hook.
-						WriteMacInt32(ReadMacInt32(0x0C0C) + 0xFE4, plug_base);
+					// Patch the NULL handler check at Plug+0x1158.
+					// The Plug's INQUIRY handler at +0x1150 does:
+					//   tst.l  (a4+0x24)     ; check handler field
+					//   bne.b  +0x10          ; if non-NULL, proceed to register
+					//   moveq  #0,d0          ; NULL → reject device
+					// The Processor handler (type 0x03) doesn't populate +0x24,
+					// so this check always fails for samplers.
+					// Fix: change BNE (0x6610) to BRA (0x6010) so the check
+					// always passes, allowing Processor devices to register.
+					uint32 bne_addr = plug_base + 0x115C;
+					uint16 bne_orig = ReadMacInt16(bne_addr);
+					if (bne_orig == 0x6610) {
+						WriteMacInt16(bne_addr, 0x6010);  // BNE → BRA
+						fprintf(stderr, "  Patched Plug+0x115C: BNE→BRA (bypass NULL handler check)\n");
 					} else {
-						fprintf(stderr, "*** Plug+0x115E unexpected: 0x%04x (base=0x%08x)\n", orig, plug_base);
+						fprintf(stderr, "  Plug+0x115C unexpected: 0x%04x (expected 0x6610)\n", bne_orig);
 					}
+
+					// Patch the SECOND NULL handler check at Plug+0x1238.
+					// The Plug has a separate acceptance path for device types 2/3
+					// (Printer/Processor) with its own tst.l (a4+0x24) / bne check.
+					// Site 1 (Plug+0x115C) handles types 0/1 (Disk/Tape).
+					// Site 2 (Plug+0x123C) handles types 2/3 (Printer/Processor).
+					// Without this patch, Processor devices are rejected even though
+					// Site 1 is patched, because they enter through the type 2/3 path.
+					uint32 bne_addr2 = plug_base + 0x123C;
+					uint16 bne_orig2 = ReadMacInt16(bne_addr2);
+					if (bne_orig2 == 0x6610) {
+						WriteMacInt16(bne_addr2, 0x6010);  // BNE → BRA
+						fprintf(stderr, "  Patched Plug+0x123C: BNE→BRA (bypass NULL handler check for types 2/3)\n");
+					} else {
+						fprintf(stderr, "  Plug+0x123C unexpected: 0x%04x (expected 0x6610)\n", bne_orig2);
+					}
+
+					// Store plug_base for later use by idle hook.
+					WriteMacInt32(ReadMacInt32(0x0C0C) + 0xFE4, plug_base);
 					fflush(stderr);
 					plug_patched = true;
 					break;
@@ -632,6 +645,35 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			break;
 
 		case OP_SCSI_DISPATCH: {	// SCSIDispatch() replacement
+			{
+				static int disp_log_count = 0;
+				if (disp_log_count < 200) {
+					uint32 ret_addr = ReadMacInt32(r->a[7]);
+					uint16 stack_sel = ReadMacInt16(r->a[7] + 4);
+					fprintf(stderr, "OP_SCSI_DISPATCH[%d]: ret=0x%08x d0=%d a0=0x%08x sel=%d\n",
+						disp_log_count, ret_addr, r->d[0], r->a[0], stack_sel);
+					fflush(stderr);
+					disp_log_count++;
+				}
+			}
+			// Check for SCSIAction (SCSI Manager 4.3) via 68k trap.
+			// MESA II's SCSI Plug calls _SCSIDispatch ($A089) with d0=1, a0=pb.
+			// The old SCSI Manager operations use stack-based selectors below.
+			// Distinguish from old-style SCSIGet (which also has d0=1 on the stack)
+			// by validating that a0 points to a plausible SCSIAction PB:
+			// - a0 > 0x1000 (not low memory)
+			// - PB+6 (pbLength) is a reasonable size (0x20..0x200)
+			if (r->d[0] == 1 && r->a[0] > 0x1000) {
+				uint16 pbLen = ReadMacInt16(r->a[0] + 6);
+				if (pbLen >= 0x20 && pbLen <= 0x200) {
+					uint32 pb = r->a[0];
+					fprintf(stderr, "SCSIDispatch: SCSIAction(68k) pb=0x%08x pbLen=%d\n", pb, pbLen);
+					fflush(stderr);
+					r->d[0] = (uint32)HandleSCSIAction(pb);
+					break;
+				}
+			}
+
 			static int scsi_disp_seq = 0;
 			scsi_disp_seq++;
 			uint32 ret = ReadMacInt32(r->a[7]);
@@ -743,31 +785,30 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			uint32 caller = ReadMacInt32(r->a[7]);
 			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x a3=0x%08x\n",
 				pb, func, target, caller, r->a[4], r->a[3]);
-			// For ExecIO (func=1) to target 6, dump frame chain AND dereference param pointers
-			if (func == 1 && target == 6) {
-				// a6 is the frame pointer. Scan up the frame chain to find
-				// the orchestrator's frame which has the device record.
-				uint32 frame = r->a[6];
-				fprintf(stderr, "  === ExecIO target 6: frame chain ===\n");
-				for (int fi = 0; fi < 6 && frame > 0x1000 && frame < 0x20000000; fi++) {
-					uint32 saved_a6 = ReadMacInt32(frame);
-					uint32 ret_addr = ReadMacInt32(frame + 4);
-					fprintf(stderr, "  frame[%d] a6=0x%08x ret=0x%08x", fi, frame, ret_addr);
-					if (frame + 16 < 0x20000000) {
-						uint32 p1 = ReadMacInt32(frame + 8);
-						uint32 p2 = ReadMacInt32(frame + 12);
-						uint32 p3 = ReadMacInt32(frame + 16);
-						fprintf(stderr, " params: %08x %08x %08x", p1, p2, p3);
-						// For frame[0], dereference p1 if it looks like a pointer
-						if (fi == 0 && p1 > 0x1000 && p1 < 0x20000000) {
-							fprintf(stderr, "\n    *p1[0..47]:");
-							for (int j = 0; j < 48; j++)
-								fprintf(stderr, " %02x", ReadMacInt8(p1 + j));
-						}
+			// Track Phase 2 per-target PB addresses for post-boot analysis
+			// Phase 1 uses a shared PB; Phase 2 uses unique per-target PBs
+			{
+				static uint32 phase1_pb_track = 0;
+				if (func == 1) {
+					if (phase1_pb_track == 0) phase1_pb_track = pb;
+					if (pb != phase1_pb_track && target <= 7) {
+						extern uint32 g_phase2_pb[8];
+						g_phase2_pb[target] = pb;
 					}
-					fprintf(stderr, "\n");
-					frame = saved_a6;
 				}
+			}
+			// For ExecIO (func=1): dump the PB structure for ALL targets
+			// Phase 2 uses per-target PBs (device records) with different addresses
+			if (func == 1) {
+				fprintf(stderr, "  === ExecIO target %d: pb=0x%08x BEFORE ===\n", target, pb);
+				fprintf(stderr, "  PB dump (176 bytes):");
+				for (int i = 0; i < 176; i++) {
+					if (i % 32 == 0) fprintf(stderr, "\n    +%03x:", i);
+					fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+				}
+				fprintf(stderr, "\n  pb+0x20=0x%08x pb+0x24=0x%08x pb+0x28(dataPtr)=0x%08x pb+0x2c(dataLen)=%d\n",
+					ReadMacInt32(pb + 0x20), ReadMacInt32(pb + 0x24),
+					ReadMacInt32(pb + 0x28), ReadMacInt32(pb + 0x2C));
 				fflush(stderr);
 			}
 			// For OldCall 0x86 to target 6, dump all 68k registers and stack
@@ -790,6 +831,48 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			}
 			fflush(stderr);
 			r->d[0] = (uint32)HandleSCSIAction(pb);
+			// After ExecIO: dump result and surrounding memory for device record discovery
+			if (func == 1) {
+				uint32 dataPtr = ReadMacInt32(pb + 40);  // pb+0x28 = scsiDataPtr
+				uint32 dataLen = ReadMacInt32(pb + 44);   // pb+0x2C = scsiDataLength
+				fprintf(stderr, "  === ExecIO target %d: AFTER (result=%d) ===\n", target, r->d[0]);
+				fprintf(stderr, "  dataPtr=0x%08x dataLen=%d\n", dataPtr, dataLen);
+				// For Phase 2 per-target PBs: dump memory from pb-0x100 to pb+0x100
+				// The PB may be embedded in a larger device record structure
+				static uint32 phase1_pb = 0;
+				if (phase1_pb == 0) phase1_pb = pb;  // First ExecIO PB is Phase 1's shared PB
+				if (pb != phase1_pb && target == 6) {
+					fprintf(stderr, "  Phase 2 target 6 device record search: pb=0x%08x\n", pb);
+					// Dump 256 bytes before PB to find containing structure
+					fprintf(stderr, "  BEFORE PB (-256 to -1):");
+					for (int i = -256; i < 0; i++) {
+						if (i % 32 == 0) fprintf(stderr, "\n    %+04d:", i);
+						fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+					}
+					fprintf(stderr, "\n  PB and AFTER (+0 to +255):");
+					for (int i = 0; i < 256; i++) {
+						if (i % 32 == 0) fprintf(stderr, "\n    +%03x:", i);
+						fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+					}
+					fprintf(stderr, "\n");
+				}
+				// Also for target 0 Phase 2 for comparison
+				if (pb != phase1_pb && target == 0) {
+					fprintf(stderr, "  Phase 2 target 0 context: pb=0x%08x\n", pb);
+					fprintf(stderr, "  BEFORE PB (-256 to -1):");
+					for (int i = -256; i < 0; i++) {
+						if (i % 32 == 0) fprintf(stderr, "\n    %+04d:", i);
+						fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+					}
+					fprintf(stderr, "\n  PB and AFTER (+0 to +255):");
+					for (int i = 0; i < 256; i++) {
+						if (i % 32 == 0) fprintf(stderr, "\n    +%03x:", i);
+						fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+					}
+					fprintf(stderr, "\n");
+				}
+				fflush(stderr);
+			}
 			break;
 		}
 
@@ -855,6 +938,56 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			break;
 
 		case OP_IDLE_TIME: {
+			// Poll MESA trace buffer (written by $ABFF trap handler)
+			{
+				uint32 scsi_globals_addr = ReadMacInt32(0x0C0C);
+				if (scsi_globals_addr) {
+					uint32 trace_buf = scsi_globals_addr + 0xF30;
+					uint32 caller = ReadMacInt32(trace_buf);
+					if (caller != 0) {
+						fprintf(stderr, "MESA_TRACE caller=0x%08x\n", caller);
+						fflush(stderr);
+						WriteMacInt32(trace_buf, 0);  // clear for next trace
+					}
+				}
+			}
+			// Check for SHUTDOWN command file on every idle tick (fast path)
+			{
+				static const char *shutdown_path = nullptr;
+				static bool shutdown_checked = false;
+				if (!shutdown_checked) {
+					const char *extfs = PrefsFindString("extfs");
+					if (extfs) {
+						static char path[512];
+						snprintf(path, sizeof(path), "%s/command.txt", extfs);
+						shutdown_path = path;
+					}
+					shutdown_checked = true;
+				}
+				if (shutdown_path) {
+					struct stat st;
+					if (stat(shutdown_path, &st) == 0) {
+						// Read first line to check if it's SHUTDOWN
+						FILE *f = fopen(shutdown_path, "r");
+						if (f) {
+							char line[64] = {};
+							if (fgets(line, sizeof(line), f)) {
+								if (strncmp(line, "SHUTDOWN", 8) == 0) {
+									fclose(f);
+									unlink(shutdown_path);
+									fprintf(stderr, "SHUTDOWN command received, sending Apple Event to Finder\n");
+									fflush(stderr);
+									extern void send_shutdown_event();
+									send_shutdown_event();
+									break;
+								}
+							}
+							fclose(f);
+						}
+					}
+				}
+			}
+
 			// Sleep if no events pending
 			if (ReadMacInt32(0x14c) == 0)
 				idle_wait();
@@ -903,11 +1036,60 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			r->d[0] = (uint32)-2;
 			break;
 
-		case OP_PLUG_TRACE:
-			fprintf(stderr, "PLUG_TRACE pc=0x%08x d0=0x%08x d7=0x%08x a0=0x%08x a4=0x%08x\n",
-				pc, r->d[0], r->d[7], r->a[0], r->a[4]);
+		case OP_PLUG_TRACE: {
+			extern uint32 g_mesa_plug_code_base;
+
+			// The trace handler is called from the $ABFF trap dispatcher.
+			// The trap dispatcher saves PC on stack before calling us.
+			// The 'pc' here is the address of our handler stub (scsi_globals+0xF20),
+			// NOT the address of the $ABFF instruction.
+			// The caller's address is on the stack at r->a[7].
+			uint32 caller = ReadMacInt32(r->a[7]);
+
+			// First trigger: detect MESA Plug init and patch other functions
+			if (!g_mesa_plug_code_base && caller > 0x10000000 && caller < 0x18000000) {
+				// Check if caller is near the Gestalt check (next bytes: A89F A746)
+				if (ReadMacInt16(caller) == 0xA89F && ReadMacInt16(caller + 2) == 0xA746) {
+					uint32 code_base = caller - 0x6E6;  // 0x6E4 + 2 bytes for ABFF = caller at 0x6E6
+					g_mesa_plug_code_base = code_base;
+					fprintf(stderr, "MESA_PLUG_INIT code_base=0x%08x caller=0x%08x\n", code_base, caller);
+
+					// Search for and patch other functions with $ABFF
+					uint32 ss = code_base - 0x2000, se = code_base + 0x8000;
+					// IdentifyBusses: 4E56 FF54 2F0A
+					for (uint32 a = ss; a < se; a += 2) {
+						if (ReadMacInt16(a)==0x4E56 && ReadMacInt16(a+2)==0xFF54 && ReadMacInt16(a+4)==0x2F0A) {
+							WriteMacInt16(a, 0xABFF);
+							fprintf(stderr, "  PATCH IdentifyBusses at 0x%08x\n", a);
+							break;
+						}
+					}
+					// ChooseSCSI: 4E56 F884 48E7
+					for (uint32 a = ss; a < se; a += 2) {
+						if (ReadMacInt16(a)==0x4E56 && ReadMacInt16(a+2)==0xF884 && ReadMacInt16(a+4)==0x48E7) {
+							WriteMacInt16(a, 0xABFF);
+							fprintf(stderr, "  PATCH ChooseSCSI at 0x%08x\n", a);
+							break;
+						}
+					}
+					// SCSICommand: 4E56 0000 48E7 1830
+					for (uint32 a = ss; a < se; a += 2) {
+						if (ReadMacInt16(a)==0x4E56 && ReadMacInt16(a+2)==0x0000 &&
+							ReadMacInt16(a+4)==0x48E7 && ReadMacInt16(a+6)==0x1830) {
+							WriteMacInt16(a, 0xABFF);
+							fprintf(stderr, "  PATCH SCSICommand at 0x%08x\n", a);
+							break;
+						}
+					}
+					fflush(stderr);
+				}
+			}
+
+			fprintf(stderr, "MESA_TRACE caller=0x%08x d0=0x%08x a0=0x%08x a4=0x%08x a7=0x%08x\n",
+				caller, r->d[0], r->a[0], r->a[4], r->a[7]);
 			fflush(stderr);
 			break;
+		}
 
 		case OP_SCSI_BRIDGE_OPEN:		// SCSI bridge driver functions
 			r->d[0] = SCSIBridgeOpen(r->a[0], r->a[1]);

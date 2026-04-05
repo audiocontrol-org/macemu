@@ -37,6 +37,33 @@
 #include "prefs.h"
 #include "thunks.h"
 
+// Graceful shutdown: launch the "Shutdown" AppleScript applet from the
+// ExtFS shared volume. The applet does `tell application "Finder" to shut down`.
+//
+// STATUS: NOT YET WORKING. Inline 68k AEM calls ($A816), CallMacOS via CFM
+// TVectors, and FSMakeFSSpec+LaunchApplication all crash from OP_IDLE_TIME
+// context. The Shutdown applet itself works when double-clicked manually.
+// See DEBUGGING.md for details.
+//
+// TODO: Find a way to launch the applet programmatically, or find the
+// correct AEM trap/calling convention that works from EMUL_OP context.
+//
+// For now, we fall back to _ShutDown trap which exits immediately.
+void send_shutdown_event()
+{
+	fprintf(stderr, "send_shutdown_event: using _ShutDown trap (graceful AE launch not yet working)\n");
+	fflush(stderr);
+	M68kRegisters r;
+	r.d[0] = 1; // ShutDwnPower
+	Execute68kTrap(0xa895, &r); // _ShutDown
+}
+
+// Phase 2 per-target PB addresses, set during boot scan in emul_op.cpp
+uint32 g_phase2_pb[8] = {};
+
+// MESA SCSI Plug code base address, set by FIND_PLUG command
+uint32 g_mesa_plug_code_base = 0;
+
 // Check interval: only check every N idle cycles to avoid overhead
 static int idle_counter = 0;
 static const int CHECK_INTERVAL = 120; // ~2 seconds at 60Hz idle rate
@@ -190,16 +217,94 @@ static void process_command_file()
 			sleep(secs);
 		}
 		else if (strncmp(line, "RESTART", 7) == 0) {
-			hook_log("RESTART: initiating Mac OS restart");
-			M68kRegisters r;
-			r.d[0] = 2; // ShutDwnRestart
-			Execute68kTrap(0xa895, &r); // _ShutDown
+			hook_log("RESTART: initiating Mac OS restart via Finder Apple Event");
+			// TODO: send 'rest' Apple Event for restart. For now, use shutdown.
+			send_shutdown_event();
 		}
 		else if (strncmp(line, "SHUTDOWN", 8) == 0) {
-			hook_log("SHUTDOWN: initiating Mac OS shutdown");
-			M68kRegisters r;
-			r.d[0] = 1; // ShutDwnPower
-			Execute68kTrap(0xa895, &r); // _ShutDown
+			hook_log("SHUTDOWN: initiating Mac OS shutdown via Finder Apple Event");
+			send_shutdown_event();
+		}
+		else if (strncmp(line, "FIND_PLUG", 9) == 0) {
+			// Find MESA's SCSI Plug code in memory by searching for the
+			// Gestalt check pattern: 303C A89F A746 (move.w #$A89F,d0; _GetToolTrapAddress)
+			// This is at file offset 0x6E4. Once found, we know the code base
+			// and can insert trace ops at known offsets.
+			hook_log("Searching for MESA SCSI Plug code in memory...");
+			uint32 gestalt_addr = 0;
+			for (uint32 addr = 0x10000000; addr < 0x18000000; addr += 2) {
+				if (ReadMacInt16(addr) == 0x303C &&
+					ReadMacInt16(addr + 2) == 0xA89F &&
+					ReadMacInt16(addr + 4) == 0xA746) {
+					gestalt_addr = addr;
+					break;
+				}
+			}
+			if (!gestalt_addr) {
+				fprintf(stderr, "MESA_PLUG_CODE_NOT_FOUND (no 303C A89F A746 pattern)\n");
+			} else {
+				uint32 code_base = gestalt_addr - 0x6E4;
+				fprintf(stderr, "MESA_PLUG_CODE at 0x%08x (Gestalt check at 0x%08x)\n",
+					code_base, gestalt_addr);
+
+				// File offsets don't match memory due to PEF relocation.
+				// Search for each function by its unique instruction pattern.
+				struct { const char *name; uint8 pattern[6]; int plen; uint32 addr; uint16 orig; } funcs[] = {
+					// ChooseSCSI: 4E56 F884 48E7 (LINK a6,#-$77C; MOVEM.L)
+					{"ChooseSCSI", {0x4E,0x56,0xF8,0x84,0x48,0xE7}, 6, 0, 0},
+					// SCSICommand: 4E56 0000 48E7 (LINK a6,#0; MOVEM.L)
+					// Too generic — many functions start with LINK a6,#0
+					// Use the unique sequence after: 48E7 1830 (specific register mask)
+					{"SCSICommand", {0x4E,0x56,0x00,0x00,0x48,0xE7}, 6, 0, 0},
+					// IdentifyBusses: 4E56 FF54 2F0A (LINK a6,#-172; MOVE.L a2,-(sp))
+					{"IdentifyBusses", {0x4E,0x56,0xFF,0x54,0x2F,0x0A}, 6, 0, 0},
+				};
+				int nfuncs = 3;
+
+				// Search in a 64KB range around the Gestalt check
+				uint32 search_start = gestalt_addr - 0x2000;
+				uint32 search_end = gestalt_addr + 0x8000;
+				for (uint32 a = search_start; a < search_end; a += 2) {
+					for (int f = 0; f < nfuncs; f++) {
+						if (funcs[f].addr) continue;  // already found
+						bool match = true;
+						for (int b = 0; b < funcs[f].plen; b++) {
+							if (ReadMacInt8(a + b) != funcs[f].pattern[b]) { match = false; break; }
+						}
+						if (match) {
+							funcs[f].addr = a;
+							fprintf(stderr, "  FOUND %s at 0x%08x\n", funcs[f].name, a);
+						}
+					}
+				}
+
+				// Now patch: Gestalt check (known), plus found functions
+				// Gestalt check is right before the trap call — patch at gestalt_addr
+				uint16 gestalt_orig = ReadMacInt16(gestalt_addr);
+				WriteMacInt16(gestalt_addr, 0xFE79);
+				fprintf(stderr, "  PATCHED Gestalt_check at 0x%08x (was %04x)\n", gestalt_addr, gestalt_orig);
+
+				// Patch after Gestalt flag set: gestalt_addr + 0x14 (0x6F8 - 0x6E4 = 0x14)
+				uint32 flag_addr = gestalt_addr + 0x14;
+				uint16 flag_orig = ReadMacInt16(flag_addr);
+				WriteMacInt16(flag_addr, 0xFE79);
+				fprintf(stderr, "  PATCHED Gestalt_flag at 0x%08x (was %04x)\n", flag_addr, flag_orig);
+
+				for (int f = 0; f < nfuncs; f++) {
+					if (funcs[f].addr) {
+						funcs[f].orig = ReadMacInt16(funcs[f].addr);
+						WriteMacInt16(funcs[f].addr, 0xFE79);
+						fprintf(stderr, "  PATCHED %s at 0x%08x (was %04x)\n",
+							funcs[f].name, funcs[f].addr, funcs[f].orig);
+					} else {
+						fprintf(stderr, "  NOT FOUND: %s\n", funcs[f].name);
+					}
+				}
+
+				extern uint32 g_mesa_plug_code_base;
+				g_mesa_plug_code_base = code_base;
+			}
+			fflush(stderr);
 		}
 		else {
 			hook_log("Unknown command: %s", line);
@@ -229,6 +334,79 @@ void ScriptHookIdle()
 		shared_path = PrefsFindString("extfs");
 		if (shared_path) {
 			hook_initialized = true;
+			fprintf(stderr, "BOOT_COMPLETE: Mac OS 9 idle handler active\n");
+
+			// Search for MESA's SCSI Plug in memory by looking for its unique string
+			// "AKAI & Living Memory 1995" which is at file offset 0x1A4.
+			// Once found, instrument key functions with OP_PLUG_TRACE.
+			{
+				static const uint8 sig[] = {'A','K','A','I',' ','&',' ','L','i','v','i','n','g'};
+				uint32 plug_load_addr = 0;
+				for (uint32 addr = 0x10000000; addr < 0x18000000; addr += 2) {
+					bool match = true;
+					for (int i = 0; i < 13; i++) {
+						if (ReadMacInt8(addr + i) != sig[i]) { match = false; break; }
+					}
+					if (match) {
+						plug_load_addr = addr - 0x1A4;  // file offset of string
+						fprintf(stderr, "MESA SCSI Plug found at 0x%08x (sig at 0x%08x)\n",
+							plug_load_addr, addr);
+						break;
+					}
+				}
+
+				if (plug_load_addr) {
+					// Dump key state at each function entry point.
+					// Instead of patching with OP_PLUG_TRACE (which replaces instructions
+					// and breaks behavior), dump the first few bytes at key offsets to
+					// verify the code is there, then dump the Plug's internal state.
+
+					// CSCSIUtils constructor area (Gestalt check at +0x6E8)
+					fprintf(stderr, "  Plug+0x6D0 (constructor):");
+					for (int i = 0; i < 32; i++) fprintf(stderr, " %02x", ReadMacInt8(plug_load_addr + 0x6D0 + i));
+					fprintf(stderr, "\n");
+
+					// Check the scsi43 flag: CSCSIUtils stores at (a4+0x26A)
+					// a4 for the SCSI Plug instance is stored somewhere... we don't know where.
+					// But we can check the IdentifyBusses result by looking at busCount.
+
+					// IdentifyBusses at +0x1F8E
+					fprintf(stderr, "  Plug+0x1F8E (IdentifyBusses):");
+					for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", ReadMacInt8(plug_load_addr + 0x1F8E + i));
+					fprintf(stderr, "\n");
+
+					// ChooseSCSI at +0x1780
+					fprintf(stderr, "  Plug+0x1780 (ChooseSCSI):");
+					for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", ReadMacInt8(plug_load_addr + 0x1780 + i));
+					fprintf(stderr, "\n");
+
+					// SCSICommand at +0x1C3E
+					fprintf(stderr, "  Plug+0x1C3E (SCSICommand):");
+					for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", ReadMacInt8(plug_load_addr + 0x1C3E + i));
+					fprintf(stderr, "\n");
+
+					// Now check if the Gestalt check code is intact
+					// At +0x6E4: should be 303C A89F A746 (move.w #$A89F,d0; _GetToolTrapAddress)
+					uint16 w6E4 = ReadMacInt16(plug_load_addr + 0x6E4);
+					uint16 w6E6 = ReadMacInt16(plug_load_addr + 0x6E6);
+					uint16 w6E8 = ReadMacInt16(plug_load_addr + 0x6E8);
+					fprintf(stderr, "  Gestalt check: +0x6E4=%04x +0x6E6=%04x +0x6E8=%04x (expect 303C A89F A746)\n",
+						w6E4, w6E6, w6E8);
+
+					// Dump the entire constructor from +0x6C0 to +0x720 to trace the flow
+					fprintf(stderr, "  Constructor dump (+0x6C0 to +0x730):\n");
+					for (int i = 0x6C0; i < 0x730; i++) {
+						if ((i - 0x6C0) % 32 == 0) fprintf(stderr, "    +%04x:", i);
+						fprintf(stderr, " %02x", ReadMacInt8(plug_load_addr + i));
+						if ((i - 0x6C0) % 32 == 31) fprintf(stderr, "\n");
+					}
+					fprintf(stderr, "\n");
+				} else {
+					fprintf(stderr, "MESA SCSI Plug NOT found in memory (MESA not running?)\n");
+				}
+			}
+			fflush(stderr);
+
 			hook_log("Script hook initialized. Shared path: %s", shared_path);
 			hook_log("Drop 'command.txt' in the shared folder to execute commands.");
 
@@ -350,6 +528,7 @@ void ScriptHookIdle()
 					}
 				}
 				hook_log("SCSI Plug base at 0x%08x", plug_base);
+
 
 					// Dump Plug code to shared folder for offline analysis
 					const char *extfs = PrefsFindString("extfs");

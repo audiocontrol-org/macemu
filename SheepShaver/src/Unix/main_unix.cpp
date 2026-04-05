@@ -1320,6 +1320,15 @@ static void Quit(void)
 			rpc_method_wait_for_reply(gui_connection, RPC_TYPE_INVALID);
 	}
 
+	// Write exit marker to shared volume for event-based shutdown detection
+	const char *extfs = PrefsFindString("extfs");
+	if (extfs) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/sheepshaver.exit", extfs);
+		FILE *f = fopen(path, "w");
+		if (f) { fprintf(f, "exited\n"); fclose(f); }
+	}
+
 	exit(0);
 }
 

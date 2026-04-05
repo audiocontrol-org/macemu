@@ -2550,8 +2550,8 @@ void InstallDrivers(void)
 	// all SCSI operations.
 	{
 		uint32 gestalt_func = scsi_globals + 0xF00;
-		WriteMacInt16(gestalt_func,     M68K_EMUL_BREAK + OP_PLUG_TRACE);  // trace
-		WriteMacInt16(gestalt_func + 2, 0x207C);  // movea.l #imm,a0
+		WriteMacInt16(gestalt_func,     0x4E71);  // nop (was OP_PLUG_TRACE — doesn't work in Mixed Mode)
+		WriteMacInt16(gestalt_func + 2, 0x207C);  // movea.l #imm,a0 — response in a0 register
 		WriteMacInt32(gestalt_func + 4, 0x000F);  // gestaltAsyncSCSI | gestaltAsyncSCSIINROM | etc.
 		WriteMacInt16(gestalt_func + 8, 0x7000);  // moveq #0,d0
 		WriteMacInt16(gestalt_func + 10, 0x4E75);  // rts
@@ -2568,6 +2568,60 @@ void InstallDrivers(void)
 			fprintf(stderr, "ReplaceGestalt('scsi') -> %d\n", (int32)r.d[0]);
 			fflush(stderr);
 		}
+	}
+
+	// Install SCSIAtomic trap handler at $A89F.
+	// MESA II's SCSI Plug checks GetToolTrapAddress($A89F) != _Unimplemented
+	// to detect SCSI Manager 4.3. The system also calls $A89F directly.
+	// Use the ROM-based handler already set up at low memory 0x624.
+	{
+		// First check what's currently at $A89F
+		r.d[0] = 0xA89F;
+		Execute68kTrap(0xa746, &r);  // _GetToolTrapAddress
+		uint32 old_a89f = r.a[0];
+
+		r.d[0] = 0xA198;  // _Unimplemented
+		Execute68kTrap(0xa746, &r);
+		uint32 unimpl = r.a[0];
+
+		fprintf(stderr, "$A89F current=0x%08x, _Unimplemented=0x%08x, match=%d\n",
+			old_a89f, unimpl, old_a89f == unimpl);
+		fflush(stderr);
+
+		// Only install if currently unimplemented
+		if (old_a89f == unimpl) {
+			uint32 scsi_atomic_rom = ReadMacInt32(0x624);
+			if (scsi_atomic_rom) {
+				r.d[0] = 0xA89F;
+				r.a[0] = scsi_atomic_rom;
+				Execute68kTrap(0xa647, &r);  // _SetToolTrapAddress
+				fprintf(stderr, "SetToolTrapAddress($A89F) = 0x%08x\n", scsi_atomic_rom);
+			}
+		} else {
+			fprintf(stderr, "$A89F already implemented, not overwriting\n");
+		}
+		fflush(stderr);
+	}
+
+	// Register trap $ABFF as a MESA SCSI Plug trace handler.
+	// Pure 68k code — emulation ops (0xFExx) don't work in Mixed Mode.
+	// The handler writes the caller's return address to a fixed memory location
+	// (trace_buf). The idle handler polls trace_buf and logs to stderr.
+	{
+		uint32 trace_buf = scsi_globals + 0xF30;
+		WriteMacInt32(trace_buf, 0);  // clear trace slot
+
+		// Minimal handler: just RTS. Verify the trap mechanism works first.
+		// Toolbox traps push the return address on the stack before calling
+		// the handler, so RTS returns to the instruction after the trap.
+		uint32 h = scsi_globals + 0xF80;
+		WriteMacInt16(h + 0, 0x4E75);    // rts
+
+		r.d[0] = 0xABFF;
+		r.a[0] = h;
+		Execute68kTrap(0xa647, &r);  // _SetToolTrapAddress
+		fprintf(stderr, "SetToolTrapAddress($ABFF) = 0x%08x, trace_buf = 0x%08x\n", h, trace_buf);
+		fflush(stderr);
 	}
 
 	// NOTE: Gestalt('mach') = 0x43 for this emulated Power Mac.
