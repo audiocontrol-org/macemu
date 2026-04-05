@@ -553,6 +553,52 @@ static const uint8 scsi_bridge_driver[] = {	// SCSI bridge driver
 	0x4e, 0x75							//  rts
 };
 
+// Second driver stub with name ".EDisk" — installed at refNum -11
+// The SCSI Plug opens ".EDisk" and checks ioRefNum == -11
+static const uint8 scsi_edisk_driver[] = {
+	// Driver header — identical to scsi_bridge_driver but named ".EDisk"
+	// Name is 8 bytes (length + 6 chars + pad), 2 more than ".SCSI" (6 bytes)
+	// So all offsets shift by +2
+	0x6f, 0x00, 0, 0, 0, 0, 0, 0,
+	0x00, 0x1a,							// Open() offset (+2)
+	0x00, 0x1e,							// Prime() offset (+2)
+	0x00, 0x22,							// Control() offset (+2)
+	0x00, 0x2e,							// Status() offset (+2)
+	0x00, 0x54,							// Close() offset (+2)
+	0x06, 0x2e, 0x45, 0x44, 0x69, 0x73, 0x6b, 0x00,	// ".EDisk" (6 chars + pad)
+	// Open()
+	M68K_EMUL_OP_SCSI_BRIDGE_OPEN >> 8, M68K_EMUL_OP_SCSI_BRIDGE_OPEN & 0xff,
+	0x4e, 0x75,
+	// Prime()
+	M68K_EMUL_OP_SCSI_BRIDGE_PRIME >> 8, M68K_EMUL_OP_SCSI_BRIDGE_PRIME & 0xff,
+	0x60, 0x0e,
+	// Control()
+	M68K_EMUL_OP_SCSI_BRIDGE_CONTROL >> 8, M68K_EMUL_OP_SCSI_BRIDGE_CONTROL & 0xff,
+	0x0c, 0x68, 0x00, 0x01, 0x00, 0x1a,
+	0x66, 0x04,
+	0x4e, 0x75,
+	// Status()
+	M68K_EMUL_OP_SCSI_BRIDGE_STATUS >> 8, M68K_EMUL_OP_SCSI_BRIDGE_STATUS & 0xff,
+	// IOReturn
+	0x32, 0x28, 0x00, 0x06,
+	0x08, 0x01, 0x00, 0x09,
+	0x67, 0x0c,
+	0x4a, 0x40,
+	0x6f, 0x02,
+	0x42, 0x40,
+	0x31, 0x40, 0x00, 0x10,
+	0x4e, 0x75,
+	0x4a, 0x40,
+	0x6f, 0x04,
+	0x42, 0x40,
+	0x4e, 0x75,
+	0x2f, 0x38, 0x08, 0xfc,
+	0x4e, 0x75,
+	// Close()
+	0x70, 0xe8,
+	0x4e, 0x75
+};
+
 static uint32 long_ptr;
 
 static void SetLongBase(uint32 addr)
@@ -2681,6 +2727,27 @@ void InstallDrivers(void)
 	WriteMacInt32(pb + ioNamePtr, scsi_bridge_str.addr());
 	r.a[0] = pb;
 	Execute68kTrap(0xa000, &r);		// Open()
+
+	// Install ".EDisk" driver at refNum -11.
+	// The SCSI Plug opens ".EDisk" during its INIT and checks ioRefNum == -11.
+	// On real Macs, the Apple SCSI disk driver is at -11. On SheepShaver,
+	// .EDisk is at -49, causing the Plug's refNum check to fail.
+	// By installing our bridge driver as ".EDisk" at -11, the Plug's INIT
+	// opens it, gets refNum -11, and the _Control hook intercepts correctly.
+	{
+		memcpy((void *)(ROMBaseHost + sony_offset + 0x780), scsi_edisk_driver, sizeof(scsi_edisk_driver));
+		int edisk_refnum = -49;  // Replace .EDisk at its real location
+		r.a[0] = ROMBase + sony_offset + 0x780;
+		r.d[0] = (uint32)edisk_refnum;
+		Execute68kTrap(0xa43d, &r);		// DrvrInstallRsrvMem()
+		r.a[0] = ReadMacInt32(ReadMacInt32(0x11c) + ~edisk_refnum * 4);
+		Execute68kTrap(0xa029, &r);		// HLock()
+		uint32 dce11 = ReadMacInt32(r.a[0]);
+		WriteMacInt32(dce11 + dCtlDriver, ROMBase + sony_offset + 0x780);
+		WriteMacInt16(dce11 + dCtlFlags, SCSIBridgeDriverFlags);
+		fprintf(stderr, ".EDisk bridge installed at refNum %d\n", edisk_refnum);
+		fflush(stderr);
+	}
 
 	// Install serial drivers
 	r.a[0] = ROMBase + sony_offset + 0x300;
