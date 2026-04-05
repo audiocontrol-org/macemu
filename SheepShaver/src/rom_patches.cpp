@@ -2195,8 +2195,8 @@ static bool patch_68k(void)
 		// Actually: let me use procInfo=0 and pass a0 directly via the stack.
 		// The PPC native op reads from r3 which gets the first stack param.
 
-		// ORIGINAL layout — proven to boot correctly.
-		// Post-boot, script_hook.cpp creates a UPP and overrides 0x0624.
+		// Write emulation op handler to 0x0624 (SCSIAtomic trap table entry).
+		// Boot 68k callers need this. Post-boot, 0x0624 gets overwritten anyway.
 		*wp++ = htons(0x21fc);			// move.l	#(base+18),0x624
 		*wp++ = htons((ROMBase + base + 18) >> 16);
 		*wp++ = htons((ROMBase + base + 18) & 0xffff);

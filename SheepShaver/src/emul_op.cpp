@@ -581,8 +581,6 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			r->d[0] = (uint32)-1;
 			PatchNameRegistry();
 			InitCallUniversalProc();
-			fprintf(stderr, "CallUniversalProc ready\n");
-			fflush(stderr);
 			break;
 
 		case OP_RESET:				// Early in MacOS reset

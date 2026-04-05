@@ -225,6 +225,45 @@ static void process_command_file()
 			hook_log("SHUTDOWN: initiating Mac OS shutdown via Finder Apple Event");
 			send_shutdown_event();
 		}
+		else if (strncmp(line, "LAUNCH_MESA", 11) == 0) {
+			// Quit MESA if running, then relaunch via Finder keyboard navigation.
+			// Sequence: Cmd+Q (quit), close windows, open HD, navigate to MESA, open.
+			hook_log("LAUNCH_MESA: quitting and relaunching MESA II");
+			// Quit current app
+			system("DISPLAY=:0 xdotool mousemove 400 155 click 1");
+			usleep(300000);
+			system("DISPLAY=:0 xdotool key alt+q");
+			usleep(3000000);  // wait for quit
+			// Close all Finder windows
+			system("DISPLAY=:0 xdotool mousemove 400 155 click 1");
+			usleep(200000);
+			for (int i = 0; i < 5; i++) {
+				system("DISPLAY=:0 xdotool key alt+w");
+				usleep(300000);
+			}
+			// Select and open Macintosh HD icon
+			system("DISPLAY=:0 xdotool mousemove 783 195 click 1");
+			usleep(500000);
+			system("DISPLAY=:0 xdotool mousemove 400 155 click 1");
+			usleep(200000);
+			system("DISPLAY=:0 xdotool key alt+o");
+			usleep(1000000);
+			// In Macintosh HD window: type "a" for Applications, open
+			system("DISPLAY=:0 xdotool key a");
+			usleep(300000);
+			system("DISPLAY=:0 xdotool key alt+o");
+			usleep(1000000);
+			// In Applications: type "m" for MESA folder, open
+			system("DISPLAY=:0 xdotool key m");
+			usleep(300000);
+			system("DISPLAY=:0 xdotool key alt+o");
+			usleep(1000000);
+			// In MESA folder: type "m" for MESA II app, open
+			system("DISPLAY=:0 xdotool key m");
+			usleep(300000);
+			system("DISPLAY=:0 xdotool key alt+o");
+			hook_log("LAUNCH_MESA: sequence complete, MESA should be launching");
+		}
 		else if (strncmp(line, "FIND_PLUG", 9) == 0) {
 			// Check SCSI handler marker
 			{
@@ -234,6 +273,11 @@ static void process_command_file()
 					uint32 handler = ReadMacInt32(0x0624);
 					fprintf(stderr, "SCSI_MARKER: 0x%08x (DEADBEEF=handler reached), 0x0624=0x%08x\n",
 						marker, handler);
+					// Check trap table entries that MESA's GetToolTrapAddress reads
+					uint32 a89f_handler = ReadMacInt32(0x067C);  // $A89F trap table entry
+					uint32 a198_handler = ReadMacInt32(0x0660);  // $A198 (_Unimplemented) entry
+					fprintf(stderr, "TRAP_TABLE: $A89F[0x067C]=0x%08x, $A198[0x0660]=0x%08x, equal=%d\n",
+						a89f_handler, a198_handler, a89f_handler == a198_handler);
 					fflush(stderr);
 				}
 			}
@@ -347,43 +391,15 @@ void ScriptHookIdle()
 			hook_initialized = true;
 			fprintf(stderr, "BOOT_COMPLETE: Mac OS 9 idle handler active\n");
 
-			// Install Mixed Mode SCSI handler post-boot.
-			// The boot handler uses emulation ops (only work in native 68k).
-			// This handler uses CallUniversalProc (works in Mixed Mode for MESA).
-			// MESA's constructor already ran (from Startup Items) and failed.
-			// After installing, we need to relaunch MESA for its constructor to re-run.
+			// Install PPC SCSI stub at 0x0624. Boot SCSI callers are done.
+			// MESA already launched but its constructor failed (old handler).
+			// MESA must be quit and relaunched for Find Sampler to work.
 			{
-				uint32 sg = ReadMacInt32(0x0C0C);
-				if (sg) {
-					uint32 tvect = NativeTVECT(NATIVE_SCSI_ACTION);
-					static SheepRoutineDescriptor *scsi_upp = new SheepRoutineDescriptor(0x000000F0, tvect);
-					uint32 upp_addr = scsi_upp->addr();
-					uint32 procInfo = 0x000000F0;
-
-				uint32 marker_addr = sg + 0xF58;
-					WriteMacInt32(marker_addr, 0);  // clear marker
-
-					uint32 h = sg + 0xF60;
-					int o = 0;
-					// Write marker to prove handler was reached
-					WriteMacInt16(h + o, 0x23FC); o += 2;  // move.l #imm, abs.l
-					WriteMacInt32(h + o, 0xDEADBEEF); o += 4;  // marker value
-					WriteMacInt32(h + o, marker_addr); o += 4;  // destination address
-					// Original handler code
-					WriteMacInt16(h + o, 0x598F); o += 2;
-					WriteMacInt16(h + o, 0x2F08); o += 2;
-					WriteMacInt16(h + o, 0x2F3C); o += 2;
-					WriteMacInt32(h + o, procInfo); o += 4;
-					WriteMacInt16(h + o, 0x2F3C); o += 2;
-					WriteMacInt32(h + o, upp_addr); o += 4;
-					WriteMacInt16(h + o, 0xAAFE); o += 2;
-					WriteMacInt16(h + o, 0x201F); o += 2;
-					WriteMacInt16(h + o, 0x4E75); o += 2;
-
-					uint32 old = ReadMacInt32(0x0624);
-					WriteMacInt32(0x0624, h);
-					fprintf(stderr, "SCSI_FIX: 0x0624 = 0x%08x (was 0x%08x), UPP=0x%08x\n", h, old, upp_addr);
-					fprintf(stderr, "SCSI_FIX: MESA must be relaunched for Find Sampler to work\n");
+				uint32 old = ReadMacInt32(0x0624);
+				if (old) {
+					uint32 ppc_stub = old + 22;
+					WriteMacInt32(0x0624, ppc_stub);
+					fprintf(stderr, "SCSI_FIX: 0x0624 = 0x%08x (PPC stub)\n", ppc_stub);
 				}
 				fflush(stderr);
 			}
