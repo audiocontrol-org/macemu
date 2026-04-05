@@ -422,21 +422,16 @@ int16 SCSIBridgeStatus(uint32 pb, uint32 dce)
 		}
 	}
 
-	case 13: // GetDriveInfo — returns statusErr (we don't have detailed drive info)
-	case 17: // GetDriveIcon — returns statusErr (no icon)
-		return statusErr;
-
 	default:
-		// Return noErr for unknown status codes (discovery mode).
-		// But NOT for 13/17 which cause infinite loops if noErr without data.
+		// Return statusErr for all unknown codes (same as disk.cpp).
 		{
 			static int status_log_count = 0;
 			if (status_log_count < 50) {
-				fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x) -> noErr\n", pb, code, code);
+				fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x) -> statusErr\n", pb, code, code);
 				fflush(stderr);
 				status_log_count++;
 			}
 		}
-		return noErr;
+		return statusErr;
 	}
 }
