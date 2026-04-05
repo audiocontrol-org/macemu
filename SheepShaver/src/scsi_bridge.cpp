@@ -287,6 +287,35 @@ int16 SCSIBridgeControl(uint32 pb, uint32 dce)
 		WriteMacInt32(pb + csParam, total_blocks);
 		return noErr;
 
+	case 9:   // formatVerify
+	case 16: { // RDrvrWrite — raw driver write for partition map
+		fprintf(stderr, "SCSIBridge: Control csCode=%d csParam:", code);
+		for (int i = 0; i < 22; i++)
+			fprintf(stderr, " %02x", ReadMacInt8(pb + csParam + i));
+		fprintf(stderr, "\n");
+		// Dereference first pointer in csParam
+		uint32 cptr = ReadMacInt32(pb + csParam);
+		if (cptr > 0x1000 && cptr < 0x20000000) {
+			fprintf(stderr, "  *csParam[0] at 0x%08x:", cptr);
+			for (int i = 0; i < 64; i++)
+				fprintf(stderr, " %02x", ReadMacInt8(cptr + i));
+			fprintf(stderr, "\n");
+		}
+		// Also check ioBuffer and ioReqCount — init might put data there
+		uint32 buf = ReadMacInt32(pb + ioBuffer);
+		uint32 count = ReadMacInt32(pb + ioReqCount);
+		uint32 pos = ReadMacInt32(pb + ioPosOffset);
+		fprintf(stderr, "  ioBuffer=0x%08x ioReqCount=%u ioPosOffset=%u\n", buf, count, pos);
+		if (buf > 0x1000 && count > 0 && count <= 65536) {
+			fprintf(stderr, "  buffer[0..31]:");
+			for (int i = 0; i < 32 && i < (int)count; i++)
+				fprintf(stderr, " %02x", ReadMacInt8(buf + i));
+			fprintf(stderr, "\n");
+		}
+		fflush(stderr);
+		return noErr;
+	}
+
 	case 65:  // accRun — periodic action
 		if (drive_mounted) {
 			// Post a diskEvent to trigger mounting
@@ -302,14 +331,23 @@ int16 SCSIBridgeControl(uint32 pb, uint32 dce)
 		}
 		return noErr;
 
-	default:
+	default: {
 		fprintf(stderr, "SCSIBridgeControl pb=0x%08x csCode=%d (0x%04x) csParam:", pb, code, code);
 		for (int i = 0; i < 22; i++) {
 			fprintf(stderr, " %02x", ReadMacInt8(pb + csParam + i));
 		}
 		fprintf(stderr, "\n");
+		// Dereference first pointer in csParam for deeper inspection
+		uint32 ptr1 = ReadMacInt32(pb + csParam);
+		if (ptr1 > 0x1000 && ptr1 < 0x20000000) {
+			fprintf(stderr, "  *csParam[0] at 0x%08x:", ptr1);
+			for (int i = 0; i < 32; i++)
+				fprintf(stderr, " %02x", ReadMacInt8(ptr1 + i));
+			fprintf(stderr, "\n");
+		}
 		fflush(stderr);
 		return controlErr;
+	}
 	}
 }
 
@@ -384,16 +422,21 @@ int16 SCSIBridgeStatus(uint32 pb, uint32 dce)
 		}
 	}
 
+	case 13: // GetDriveInfo — returns statusErr (we don't have detailed drive info)
+	case 17: // GetDriveIcon — returns statusErr (no icon)
+		return statusErr;
+
 	default:
-		// Log unknown status codes (throttled)
+		// Return noErr for unknown status codes (discovery mode).
+		// But NOT for 13/17 which cause infinite loops if noErr without data.
 		{
 			static int status_log_count = 0;
 			if (status_log_count < 50) {
-				fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x)\n", pb, code, code);
+				fprintf(stderr, "SCSIBridgeStatus pb=0x%08x csCode=%d (0x%04x) -> noErr\n", pb, code, code);
 				fflush(stderr);
 				status_log_count++;
 			}
 		}
-		return statusErr;
+		return noErr;
 	}
 }
