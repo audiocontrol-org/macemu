@@ -278,6 +278,32 @@ static void process_command_file()
 					uint32 a198_handler = ReadMacInt32(0x0660);  // $A198 (_Unimplemented) entry
 					fprintf(stderr, "TRAP_TABLE: $A89F[0x067C]=0x%08x, $A198[0x0660]=0x%08x, equal=%d\n",
 						a89f_handler, a198_handler, a89f_handler == a198_handler);
+					// Dump ROM opcode table entries for A-line opcodes
+					// Table at ROMBase + 0x380000, each entry 8 bytes
+					uint32 rom_base = 0x50000000;  // from log
+					uint32 table = rom_base + 0x380000;
+					fprintf(stderr, "OPCODE_TABLE ($A089): %08x %08x\n",
+						ReadMacInt32(table + 0xA089 * 8),
+						ReadMacInt32(table + 0xA089 * 8 + 4));
+					fprintf(stderr, "OPCODE_TABLE ($A89F): %08x %08x\n",
+						ReadMacInt32(table + 0xA89F * 8),
+						ReadMacInt32(table + 0xA89F * 8 + 4));
+					fprintf(stderr, "OPCODE_TABLE ($A055): %08x %08x\n",
+						ReadMacInt32(table + 0xA055 * 8),
+						ReadMacInt32(table + 0xA055 * 8 + 4));
+					// Dump the A-line handler (branch target for $A089)
+					uint32 a089_entry_addr = table + 0xA089 * 8 + 4;
+					uint32 branch_instr = ReadMacInt32(a089_entry_addr);
+					int32 branch_off = (int32)(branch_instr & 0x03FFFFFC);
+					if (branch_off & 0x02000000) branch_off |= (int32)0xFC000000;
+					uint32 aline_handler = a089_entry_addr + branch_off;
+					fprintf(stderr, "A089_HANDLER at 0x%08x:\n", aline_handler);
+					for (int row = 0; row < 4; row++) {
+						fprintf(stderr, "  +%02x:", row * 16);
+						for (int i = 0; i < 16; i += 4)
+							fprintf(stderr, " %08x", ReadMacInt32(aline_handler + row * 16 + i));
+						fprintf(stderr, "\n");
+					}
 					fflush(stderr);
 				}
 			}

@@ -1189,6 +1189,24 @@ static bool patch_68k_emul(void)
 		*lp++ = htonl(POWERPC_EMUL_OP | (i + 3));
 		*lp++ = htonl(0x4bf66e68 - i*8);				// b	0x366084
 	}
+
+	// Patch $A089 opcode table entry to call OP_SCSI_ATOMIC directly.
+	// This makes the ROM's 68k interpreter dispatch $A089 through our
+	// emulation op handler, which works from BOTH native 68k AND Mixed Mode.
+	// The ROM's default A-line handler doesn't dispatch correctly because
+	// SheepShaver disables the 68k exception table (rom_patches.cpp:1469).
+	{
+		uint32 a089_entry = 0x380000 + 0xA089 * 8;
+		uint32 *ap = (uint32 *)(ROMBaseHost + a089_entry);
+		// Calculate branch offset to 0x366084 from this entry's second word
+		int32 branch_target = 0x366084;
+		int32 branch_from = a089_entry + 4;
+		int32 rel = branch_target - branch_from;
+		ap[0] = htonl(POWERPC_EMUL_OP | (OP_SCSI_ATOMIC + 3));
+		ap[1] = htonl(0x48000000 | (rel & 0x03FFFFFC));
+		fprintf(stderr, "Patched $A089 opcode table entry at ROM+0x%x: EMUL_OP %d + branch\n",
+			a089_entry, OP_SCSI_ATOMIC);
+	}
 #else
 	// Install EMUL_RETURN, EXEC_RETURN and EMUL_OP opcodes
 	lp = (uint32 *)(ROMBaseHost + 0x380000 + (M68K_EMUL_RETURN << 3));
