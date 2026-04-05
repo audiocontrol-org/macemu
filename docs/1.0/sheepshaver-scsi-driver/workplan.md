@@ -46,9 +46,10 @@ Validate the driver can do real SCSI I/O by mounting an HFS disk image served by
 5. Handle partition mapping if needed (Apple Partition Map or raw volume)
 
 **Success criteria:**
-- [ ] Mac OS 9 mounts the HFS volume on the desktop
-- [ ] Files can be read from the mounted volume
-- [ ] SCSI READ commands appear in `scsi_send_cmd` trace
+- [x] Mac OS 9 mounts the HFS volume on the desktop
+- [x] Files can be read from the mounted volume
+- [x] ~1MB file writes persist across reboots
+- [x] SCSI READ/WRITE commands appear in `scsi_send_cmd` trace
 
 **Key technical details:**
 - Mac OS sends READ with ioBuffer (data destination), ioReqCount (byte count), ioPosOffset (disk position)
