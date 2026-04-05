@@ -75,6 +75,58 @@ int32 HandleSCSIAction(uint32 pb)
 		}
 	}
 
+	// One-shot: patch the SCSI Plug's device handler NULL check.
+	// The Plug at 0x1150 does: TST.L (a4+0x24); BNE.S proceed; MOVEQ #0,d0
+	// If +0x24 is NULL, the device is silently rejected.
+	// Patch: change MOVEQ #0,d0 (0x7000) to MOVEQ #1,d0 (0x7001) at Plug+0x115E.
+	// This passes 1 instead of NULL to the registration function.
+	// We do this from HandleSCSIAction because it runs during the Plug's scan.
+	{
+		static bool plug_patched = false;
+		if (!plug_patched) {
+			// Search for the Plug's pattern: 285F 200C 6704 7E01 at offset 0x06EC
+			static const uint8 pattern[] = {0x28, 0x5F, 0x20, 0x0C, 0x67, 0x04, 0x7E, 0x01};
+			for (uint32 addr = 0x10000000; addr < 0x11000000; addr += 2) {
+				bool match = true;
+				for (int i = 0; i < 8; i++) {
+					if (ReadMacInt8(addr + i) != pattern[i]) { match = false; break; }
+				}
+				if (match) {
+					uint32 plug_base = addr - 0x06EC;
+					uint32 patch_addr = plug_base + 0x115E;
+					uint16 orig = ReadMacInt16(patch_addr);
+					if (orig == 0x7000) {  // moveq #0,d0
+						// Instead of passing 1, we need to pass the address of the
+						// device record's +0x24 field. But we don't have it here.
+						// Alternative: NOP the TST.L and BNE.S at 0x1158-0x115C
+						// to force the "non-NULL" path. Then the code at 0x116E
+						// dispatches through the vtable at +0x20.
+						//
+						// Actually: easier to just NOP the BNE at 0x115C so the code
+						// always falls through to the NULL-exit path. That doesn't help.
+						//
+						// Best: patch the BNE.S at 0x115C to BRA.S (always branch
+						// to the non-NULL handler at 0x116E). This skips the +0x24
+						// check entirely.
+						uint32 bne_addr = plug_base + 0x115C;
+						uint16 bne_orig = ReadMacInt16(bne_addr);
+						if ((bne_orig & 0xFF00) == 0x6600) {  // bne.s
+							uint8 disp = bne_orig & 0xFF;
+							WriteMacInt16(bne_addr, 0x6000 | disp);  // bra.s (same displacement)
+							fprintf(stderr, "*** Patched Plug+0x115C: BNE.S -> BRA.S (always take non-NULL path)\n");
+						}
+						fprintf(stderr, "*** Patched Plug at base=0x%08x\n", plug_base);
+					} else {
+						fprintf(stderr, "*** Plug+0x115E unexpected: 0x%04x (base=0x%08x)\n", orig, plug_base);
+					}
+					fflush(stderr);
+					plug_patched = true;
+					break;
+				}
+			}
+		}
+	}
+
 	int32 result = 0;
 	uint8 functionCode = ReadMacInt8(pb + 8);
 	uint8 busNum = ReadMacInt8(pb + 13);
