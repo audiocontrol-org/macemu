@@ -160,6 +160,36 @@ int16 SCSIBridgeOpen(uint32 pb, uint32 dce)
 	// Flag for mounting on first accRun
 	drive_mounted = true;
 
+	// Test MIDI-over-SCSI: send CDB 0x09 (MIDI init) to S3000XL at target 6
+	{
+		fprintf(stderr, "SCSIBridge: Testing MIDI init to target 6...\n");
+		uint8 midi_init_cdb[6] = { 0x09, 0x00, 0x01, 0x01, 0x00, 0x00 };
+		scsi_set_cmd(6, midi_init_cdb);
+		if (scsi_set_target(6, 0)) {
+			uint16 midi_stat = 0;
+			uint8 *sg_p[1] = { nullptr };
+			uint32 sg_l[1] = { 0 };
+			bool ok = scsi_send_cmd(0, false, 0, sg_p, sg_l, &midi_stat, 30);
+			fprintf(stderr, "SCSIBridge: MIDI init CDB 0x09 -> ok=%d stat=%d\n", ok, midi_stat);
+
+			if (ok && midi_stat == 0) {
+				// MIDI session active! Try polling with CDB 0x0D
+				uint8 poll_cdb[6] = { 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00 };
+				uint8 poll_resp[3] = {};
+				uint8 *poll_ptr[1] = { poll_resp };
+				uint32 poll_len[1] = { 3 };
+				scsi_set_cmd(6, poll_cdb);
+				scsi_set_target(6, 0);
+				ok = scsi_send_cmd(3, true, 1, poll_ptr, poll_len, &midi_stat, 30);
+				fprintf(stderr, "SCSIBridge: MIDI poll CDB 0x0D -> ok=%d stat=%d resp=%02x %02x %02x\n",
+					ok, midi_stat, poll_resp[0], poll_resp[1], poll_resp[2]);
+			}
+		} else {
+			fprintf(stderr, "SCSIBridge: target 6 not present for MIDI test\n");
+		}
+		fflush(stderr);
+	}
+
 	fflush(stderr);
 	return noErr;
 }
