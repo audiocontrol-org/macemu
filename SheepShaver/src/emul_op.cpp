@@ -96,24 +96,9 @@ int32 HandleSCSIAction(uint32 pb)
 					uint32 patch_addr = plug_base + 0x115E;
 					uint16 orig = ReadMacInt16(patch_addr);
 					if (orig == 0x7000) {  // moveq #0,d0
-						// Patch 1: BNE.S -> BRA.S at +0x115C (bypass +0x24 NULL check)
-						uint32 bne_addr = plug_base + 0x115C;
-						uint16 bne_orig = ReadMacInt16(bne_addr);
-						if ((bne_orig & 0xFF00) == 0x6600) {
-							uint8 disp = bne_orig & 0xFF;
-							WriteMacInt16(bne_addr, 0x6000 | disp);  // bra.s
-							fprintf(stderr, "*** Patch 1: Plug+0x115C BNE.S -> BRA.S\n");
-						}
-
-						// Patch 2: NOP out JSR at +0x11AA (vtable dispatch that crashes
-						// on NULL vtable). Replace 4-byte JSR with MOVEQ #0,d0 + NOP
-						uint32 jsr_addr = plug_base + 0x11AA;
-						uint32 jsr_orig = ReadMacInt32(jsr_addr);
-						WriteMacInt16(jsr_addr, 0x7000);      // moveq #0,d0
-						WriteMacInt16(jsr_addr + 2, 0x4E71);  // nop
-						fprintf(stderr, "*** Patch 2: Plug+0x11AA JSR->MOVEQ#0+NOP (was %08x)\n", jsr_orig);
-
-						fprintf(stderr, "*** Plug patched at base=0x%08x\n", plug_base);
+						// DISABLED — returning 4 causes infinite BusInquiry loop.
+						// Need to understand the full scan loop before patching.
+						fprintf(stderr, "*** Plug found at base=0x%08x (patches disabled)\n", plug_base);
 					} else {
 						fprintf(stderr, "*** Plug+0x115E unexpected: 0x%04x (base=0x%08x)\n", orig, plug_base);
 					}
