@@ -77,11 +77,17 @@ A 68k Mac OS device driver (`.SCSI` at refNum -50, `.EDisk` at refNum -49) is in
 - These are at DIFFERENT addresses (PEF loader separates code and data)
 - In-memory patching with `$ABFF` traps is possible but causes "◆P" warnings
 
-**Next approach to try:**
-- Hook `_SCSIDispatch` ($A089) handler to log caller address — if MESA ever calls it, we'll see
-- Or intercept the trap dispatch itself: when $A198 is called, log it (this might be IdentifyBusses)
-- Or write a native PPC PLUG replacement that wraps the original and logs all calls
-- Or use SheepShaver's PPC emulator's instruction tracing for the MESA code range
+**NEW FINDING — likely root cause:**
+The `_SCSIDispatch` handler at ROM `base+22` contains `M68K_EMUL_OP_SCSI_DISPATCH` (0xFE7D) — an emulation op that only works in SheepShaver's native 68k context. When MESA's 68k Plug (running in Mixed Mode) calls `$A089`, the trap dispatcher jumps to this handler, hits the emulation op, and fails. This is the SAME problem as our Plug patching attempts (emulation ops crash in Mixed Mode with error type 12).
+
+The system SCSI driver works because it calls SCSIAction through PPC thunks (OP_SCSI_ATOMIC), bypassing the 68k trap entirely. MESA's 68k Plug is the only code that calls `$A089` as a 68k trap — and it fails.
+
+**The fix:** Replace the `_SCSIDispatch` handler with pure 68k code that works in Mixed Mode, then routes to our C handler through a mechanism that works in both contexts (e.g., writing to shared memory polled by idle handler, or calling through a PPC callback).
+
+**Alternative approaches:**
+- Write a PPC wrapper PLUG that replaces the 68k SCSI Plug
+- Use SheepShaver's PPC instruction tracer for the MESA code range
+- Make the 68k trap handler call through the PPC SCSIAction path instead
 
 ### Previous analysis (system SCSI driver — NOT MESA's Plug)
 
