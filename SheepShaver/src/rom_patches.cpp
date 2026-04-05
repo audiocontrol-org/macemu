@@ -2319,8 +2319,9 @@ static bool patch_68k(void)
 	gen_bin_driver( ROMBase + sony_offset + 0x500);
 	gen_bout_driver(ROMBase + sony_offset + 0x600);
 
-	// Install .SCSI bridge driver
+	// Install .SCSI bridge driver and .EDisk bridge driver
 	memcpy((void *)(ROMBaseHost + sony_offset + 0x700), scsi_bridge_driver, sizeof(scsi_bridge_driver));
+	memcpy((void *)(ROMBaseHost + sony_offset + 0x780), scsi_edisk_driver, sizeof(scsi_edisk_driver));
 
 	// Copy icons to ROM
 	SonyDiskIconAddr = ROMBase + sony_offset + 0x800;
@@ -2728,30 +2729,37 @@ void InstallDrivers(void)
 	r.a[0] = pb;
 	Execute68kTrap(0xa000, &r);		// Open()
 
-	// DISABLED — .EDisk at -11 causes crash after drive registration.
-	// Need to investigate why. Commenting out for stability.
-#if 0
 	// Install ".EDisk" driver at refNum -11.
-	// The SCSI Plug opens ".EDisk" during its INIT and checks ioRefNum == -11.
-	// On real Macs, the Apple SCSI disk driver is at -11. On SheepShaver,
-	// .EDisk is at -49, causing the Plug's refNum check to fail.
-	// By installing our bridge driver as ".EDisk" at -11, the Plug's INIT
-	// opens it, gets refNum -11, and the _Control hook intercepts correctly.
+	// Previously crashed — adding step-by-step logging.
+	// Install ".EDisk" bridge driver at refNum -11
 	{
-		memcpy((void *)(ROMBaseHost + sony_offset + 0x780), scsi_edisk_driver, sizeof(scsi_edisk_driver));
-		int edisk_refnum = -11;  // Real Mac SCSI driver refNum
+		// memcpy done in PatchROM, not here (ROM is read-only by InstallDrivers time)
+		int edisk_refnum = -11;
+		fprintf(stderr, "step 2: DrvrInstallRsrvMem(%d)\n", edisk_refnum); fflush(stderr);
 		r.a[0] = ROMBase + sony_offset + 0x780;
 		r.d[0] = (uint32)edisk_refnum;
 		Execute68kTrap(0xa43d, &r);		// DrvrInstallRsrvMem()
-		r.a[0] = ReadMacInt32(ReadMacInt32(0x11c) + ~edisk_refnum * 4);
-		Execute68kTrap(0xa029, &r);		// HLock()
-		uint32 dce11 = ReadMacInt32(r.a[0]);
-		WriteMacInt32(dce11 + dCtlDriver, ROMBase + sony_offset + 0x780);
-		WriteMacInt16(dce11 + dCtlFlags, SCSIBridgeDriverFlags);
-		fprintf(stderr, ".EDisk bridge installed at refNum %d\n", edisk_refnum);
+		fprintf(stderr, "step 2 done, result=%d\n", (int16)r.d[0]); fflush(stderr);
+
+		fprintf(stderr, "step 3: get DCE from unit table\n"); fflush(stderr);
+		uint32 ut = ReadMacInt32(0x11c);
+		uint32 idx = ~edisk_refnum;
+		uint32 handle = ReadMacInt32(ut + idx * 4);
+		fprintf(stderr, "  ut=0x%08x idx=%d handle=0x%08x\n", ut, idx, handle); fflush(stderr);
+
+		if (handle == 0) {
+			fprintf(stderr, "  ERROR: NULL handle at unit table slot %d\n", idx);
+		} else {
+			r.a[0] = handle;
+			Execute68kTrap(0xa029, &r);		// HLock()
+			uint32 dce11 = ReadMacInt32(handle);
+			fprintf(stderr, "step 4: dce=0x%08x, setting dCtlDriver and flags\n", dce11); fflush(stderr);
+			WriteMacInt32(dce11 + dCtlDriver, ROMBase + sony_offset + 0x780);
+			WriteMacInt16(dce11 + dCtlFlags, SCSIBridgeDriverFlags);
+			fprintf(stderr, ".EDisk bridge installed at refNum %d\n", edisk_refnum);
+		}
 		fflush(stderr);
 	}
-#endif
 
 	// Install serial drivers
 	r.a[0] = ROMBase + sony_offset + 0x300;

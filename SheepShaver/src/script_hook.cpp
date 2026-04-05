@@ -307,7 +307,34 @@ void ScriptHookIdle()
 						}
 					}
 					fflush(stderr);
-					hook_log("SCSI Plug base at 0x%08x", plug_base);
+					// Dump the Plug's device records by scanning heap for
+				// structures with SCSI device type 0x03 (Processor) at +0x06
+				fprintf(stderr, "Searching for Plug device records...\n");
+				for (uint32 addr = 0x10000000; addr < 0x10200000; addr += 2) {
+					// Device record signature: word at +0x06 has low 3 bits = 3 (Processor)
+					// AND long at +0x24 is 0 (the NULL handler descriptor)
+					// AND word at +0x10 is non-zero (status was set)
+					uint16 w06 = ReadMacInt16(addr + 0x06);
+					if ((w06 & 0x07) == 0x03) {
+						uint32 v24 = ReadMacInt32(addr + 0x24);
+						int16 v18 = (int16)ReadMacInt16(addr + 0x18);
+						uint16 v10 = ReadMacInt16(addr + 0x10);
+						uint16 v04 = ReadMacInt16(addr + 0x04);
+						// Filter: v18 should be a negative refNum, v10 should be small
+						if (v18 < 0 && v18 > -128 && v10 < 100) {
+							fprintf(stderr, "  Candidate device record at 0x%08x:\n", addr);
+							fprintf(stderr, "    +04(flags)=%04x +06(composite)=%04x +10(status)=%04x\n", v04, w06, v10);
+							fprintf(stderr, "    +18(refNum)=%d +1A(scan)=%04x +24(handler)=0x%08x\n",
+								v18, ReadMacInt16(addr + 0x1A), v24);
+							fprintf(stderr, "    Full dump:");
+							for (int i = 0; i < 0x30; i++)
+								fprintf(stderr, " %02x", ReadMacInt8(addr + i));
+							fprintf(stderr, "\n");
+						}
+					}
+				}
+				fflush(stderr);
+				hook_log("SCSI Plug base at 0x%08x", plug_base);
 
 					// Dump Plug code to shared folder for offline analysis
 					const char *extfs = PrefsFindString("extfs");
