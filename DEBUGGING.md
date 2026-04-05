@@ -1,8 +1,14 @@
 # SheepShaver SCSI Bridge — Debugging Notes
 
-## Goal
+## Goals
 
-Capture MESA II's SCSI traffic to the Akai S3000XL to understand why SysEx-over-SCSI writes don't persist. The existing implementation (in `audiocontrol-scsi-midi-bridge`) can read from the S3000XL but writes don't stick. MESA presumably handles writes correctly, so capturing its traffic will reveal the difference.
+### Primary: Understand the S3000XL SCSI conversation protocol
+
+We need to observe a working, two-way conversation between a software editor (MESA II) and the Akai S3000XL hardware. The audiocontrol web editor can talk to the S3000XL via MIDI-over-SCSI, but we don't completely understand how the protocol works — particularly for writes that persist. Capturing MESA II's actual SCSI traffic will show us the correct conversation pattern so we can implement it in the audiocontrol web editor.
+
+### Secondary: MESA II on modern hardware for the vintage sampler community
+
+Provide the vintage Akai sampler community a way to run MESA II on modern hardware (via SheepShaver) and communicate with vintage S3000XL/S3200XL hardware over SCSI-over-network (via scsi2pi on a Raspberry Pi). This eliminates the need for a vintage Mac with a SCSI card.
 
 ## Architecture
 
