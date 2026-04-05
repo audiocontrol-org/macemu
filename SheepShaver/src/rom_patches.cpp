@@ -2728,6 +2728,9 @@ void InstallDrivers(void)
 	r.a[0] = pb;
 	Execute68kTrap(0xa000, &r);		// Open()
 
+	// DISABLED — .EDisk at -11 causes crash after drive registration.
+	// Need to investigate why. Commenting out for stability.
+#if 0
 	// Install ".EDisk" driver at refNum -11.
 	// The SCSI Plug opens ".EDisk" during its INIT and checks ioRefNum == -11.
 	// On real Macs, the Apple SCSI disk driver is at -11. On SheepShaver,
@@ -2736,7 +2739,7 @@ void InstallDrivers(void)
 	// opens it, gets refNum -11, and the _Control hook intercepts correctly.
 	{
 		memcpy((void *)(ROMBaseHost + sony_offset + 0x780), scsi_edisk_driver, sizeof(scsi_edisk_driver));
-		int edisk_refnum = -49;  // Replace .EDisk at its real location
+		int edisk_refnum = -11;  // Real Mac SCSI driver refNum
 		r.a[0] = ROMBase + sony_offset + 0x780;
 		r.d[0] = (uint32)edisk_refnum;
 		Execute68kTrap(0xa43d, &r);		// DrvrInstallRsrvMem()
@@ -2748,6 +2751,7 @@ void InstallDrivers(void)
 		fprintf(stderr, ".EDisk bridge installed at refNum %d\n", edisk_refnum);
 		fflush(stderr);
 	}
+#endif
 
 	// Install serial drivers
 	r.a[0] = ROMBase + sony_offset + 0x300;
