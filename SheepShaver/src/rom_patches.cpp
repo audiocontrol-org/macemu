@@ -2158,6 +2158,8 @@ static bool patch_68k(void)
 	}
 	D(bug("scsi_mgr %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
+
+	// Write vectors and handlers (original layout)
 	*wp++ = htons(0x21fc);			// move.l	#xxx,0x624	(SCSIAtomic)
 	*wp++ = htons((ROMBase + base + 18) >> 16);
 	*wp++ = htons((ROMBase + base + 18) & 0xffff);
@@ -2167,9 +2169,9 @@ static bool patch_68k(void)
 	*wp++ = htons((ROMBase + base + 22) & 0xffff);
 	*wp++ = htons(0x0e54);
 	*wp++ = htons(M68K_RTS);
-	*wp++ = htons(M68K_EMUL_OP_SCSI_ATOMIC);
+	*wp++ = htons(M68K_EMUL_OP_SCSI_ATOMIC);	// base+18: SCSIAtomic handler
 	*wp++ = htons(M68K_RTS);
-	*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);
+	*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);	// base+22: SCSIDispatch handler
 	*wp = htons(0x4ed0);			// jmp		(a0)
 	wp = (uint16 *)(ROMBaseHost + base + 0x20);
 	*wp++ = htons(0x7000);			// moveq	#0,d0

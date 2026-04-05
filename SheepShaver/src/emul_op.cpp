@@ -355,6 +355,16 @@ int32 HandleSCSIAction(uint32 pb)
 void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 {
 	D(bug("EmulOp %04x at %08x\n", selector, pc));
+	// Log SCSI-related emulation ops to verify they're reached
+	if (selector == OP_SCSI_ATOMIC || selector == OP_SCSI_DISPATCH) {
+		static int scsi_emulop_count = 0;
+		if (scsi_emulop_count < 200) {
+			fprintf(stderr, "EmulOp_SCSI: sel=%d pc=0x%08x a0=0x%08x a7=0x%08x\n",
+				selector, pc, r->a[0], r->a[7]);
+			fflush(stderr);
+			scsi_emulop_count++;
+		}
+	}
 	switch (selector) {
 		case OP_BREAK:				// Breakpoint
 			printf("*** Breakpoint\n");
@@ -938,19 +948,6 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			break;
 
 		case OP_IDLE_TIME: {
-			// Poll MESA trace buffer (written by $ABFF trap handler)
-			{
-				uint32 scsi_globals_addr = ReadMacInt32(0x0C0C);
-				if (scsi_globals_addr) {
-					uint32 trace_buf = scsi_globals_addr + 0xF30;
-					uint32 caller = ReadMacInt32(trace_buf);
-					if (caller != 0) {
-						fprintf(stderr, "MESA_TRACE caller=0x%08x\n", caller);
-						fflush(stderr);
-						WriteMacInt32(trace_buf, 0);  // clear for next trace
-					}
-				}
-			}
 			// Check for SHUTDOWN command file on every idle tick (fast path)
 			{
 				static const char *shutdown_path = nullptr;
