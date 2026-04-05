@@ -336,6 +336,20 @@ void ScriptHookIdle()
 			hook_initialized = true;
 			fprintf(stderr, "BOOT_COMPLETE: Mac OS 9 idle handler active\n");
 
+			// Override 0x0624 ($A089 trap table entry) with our Mixed Mode handler
+			// at scsi_globals+0xF60. Uses CallUniversalProc for 68k→PPC transition.
+			{
+				uint32 sg = ReadMacInt32(0x0C0C);
+				if (sg) {
+					uint32 handler_addr = sg + 0xF60;
+					uint32 old_vector = ReadMacInt32(0x0624);
+					WriteMacInt32(0x0624, handler_addr);
+					fprintf(stderr, "SCSI_FIX: 0x0624 = 0x%08x (was 0x%08x)\n",
+						handler_addr, old_vector);
+				}
+				fflush(stderr);
+			}
+
 			// Search for MESA's SCSI Plug in memory by looking for its unique string
 			// "AKAI & Living Memory 1995" which is at file offset 0x1A4.
 			// Once found, instrument key functions with OP_PLUG_TRACE.

@@ -2195,109 +2195,29 @@ static bool patch_68k(void)
 		// Actually: let me use procInfo=0 and pass a0 directly via the stack.
 		// The PPC native op reads from r3 which gets the first stack param.
 
-		uint32 procInfo_for_call = 0x000000F0;
-		// kCStackBased(0) with result=long(2<<4=0x20) and param1=long(2<<6=0x80)
-		// Actually Inside Mac says: 0x000000F0 is "pascal, result=4bytes, 1 param=4bytes"
-		// Let me just try 0x000000F0.
-
-		// Create the UPP for the PPC SCSI handler
-		uint32 tvect = NativeTVECT(NATIVE_SCSI_ACTION);
-		static SheepRoutineDescriptor *scsi_upp = new SheepRoutineDescriptor(0x000000F0, tvect);
-		uint32 upp_addr = scsi_upp->addr();
-		fprintf(stderr, "SCSIAction UPP=0x%08x tvect=0x%08x\n", upp_addr, tvect);
-
-		// Write init code at base+0: set vectors, then fall through to handler
-		*wp++ = htons(0x21fc);			// move.l	#handler,0x624	(SCSIAtomic)
-		*wp++ = htons((ROMBase + base + 0x40) >> 16);
-		*wp++ = htons((ROMBase + base + 0x40) & 0xffff);
+		// ORIGINAL layout — proven to boot correctly.
+		// Post-boot, script_hook.cpp creates a UPP and overrides 0x0624.
+		*wp++ = htons(0x21fc);			// move.l	#(base+18),0x624
+		*wp++ = htons((ROMBase + base + 18) >> 16);
+		*wp++ = htons((ROMBase + base + 18) & 0xffff);
 		*wp++ = htons(0x0624);
-		*wp++ = htons(0x21fc);			// move.l	#emulop,0xe54	(SCSIDispatch)
-		*wp++ = htons((ROMBase + base + 0x38) >> 16);
-		*wp++ = htons((ROMBase + base + 0x38) & 0xffff);
+		*wp++ = htons(0x21fc);			// move.l	#(base+22),0xe54
+		*wp++ = htons((ROMBase + base + 22) >> 16);
+		*wp++ = htons((ROMBase + base + 22) & 0xffff);
 		*wp++ = htons(0x0e54);
-		*wp++ = htons(M68K_RTS);		// base+18: end of init
-
-		// base+18: emulation op handler (for native 68k callers during boot)
+		*wp++ = htons(M68K_RTS);
 		*wp++ = htons(M68K_EMUL_OP_SCSI_ATOMIC);
 		*wp++ = htons(M68K_RTS);
-
-		// base+22: old SCSIDispatch emulation op
 		*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);
-		*wp = htons(0x4ed0);			// jmp (a0)
-
-		// base+0x20: error return
+		*wp = htons(0x4ed0);			// jmp		(a0)
 		wp = (uint16 *)(ROMBaseHost + base + 0x20);
-		*wp++ = htons(0x7000);			// moveq #0,d0
+		*wp++ = htons(0x7000);			// moveq	#0,d0
 		*wp = htons(M68K_RTS);
 
-		// base+0x28: PPC stub (mr r3,r7; NATIVE_SCSI_ACTION; blr)
-		// Keep this for PPC thunk callers — it's already patched by the thunk code below.
-
-		// base+0x38: SCSIDispatch handler for 0xe54 (emulation op, native 68k only)
-		wp = (uint16 *)(ROMBaseHost + base + 0x38);
-		*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);
-		*wp++ = htons(0x4ed0);			// jmp (a0)
-
-		// base+0x40: 68k SCSIAtomic handler for 0x624 (works in BOTH contexts)
-		// a0 = PB pointer.
-		// Strategy: try emulation op first (works during boot in native 68k).
-		// If it causes an error (Mixed Mode), fall back to CallUniversalProc.
-		//
-		// Actually simpler: check a flag that gets set after CallUniversalProc
-		// is initialized. If flag is set, use CallUniversalProc. Otherwise,
-		// use the emulation op.
-		//
-		// Flag location: scsi_globals + 0xF50
-		{
-			// Use a fixed low-memory address for the flag (avoids needing
-			// scsi_globals which isn't set yet during ROM patching)
-			uint32 flag_addr = 0x0F50;
-			WriteMacInt32(flag_addr, 0);  // initially 0 (use emulation op)
-
-			uint8 *hp = ROMBaseHost + base + 0x40;
-			int o = 0;
-
-			// tst.l flag_addr  — check if CallUniversalProc is ready
-			hp[o++] = 0x4A; hp[o++] = 0xB9;
-			hp[o++] = (flag_addr >> 24) & 0xFF;
-			hp[o++] = (flag_addr >> 16) & 0xFF;
-			hp[o++] = (flag_addr >> 8) & 0xFF;
-			hp[o++] = flag_addr & 0xFF;
-			// bne.s call_universal  — if flag set, use CallUniversalProc
-			hp[o++] = 0x66; hp[o++] = 0x04;  // branch offset = 4 (skip emul op + rts)
-			// Emulation op path (native 68k during boot):
-			hp[o++] = (M68K_EMUL_OP_SCSI_ATOMIC >> 8) & 0xFF;
-			hp[o++] = M68K_EMUL_OP_SCSI_ATOMIC & 0xFF;
-			hp[o++] = 0x4E; hp[o++] = 0x75;  // rts
-
-			// call_universal:
-			// subq.l #4,sp  — space for result
-			hp[o++] = 0x59; hp[o++] = 0x8F;
-			// move.l a0,-(sp)  — push PB pointer
-			hp[o++] = 0x2F; hp[o++] = 0x08;
-			// move.l #procInfo,-(sp)
-			hp[o++] = 0x2F; hp[o++] = 0x3C;
-			hp[o++] = (procInfo_for_call >> 24) & 0xFF;
-			hp[o++] = (procInfo_for_call >> 16) & 0xFF;
-			hp[o++] = (procInfo_for_call >> 8) & 0xFF;
-			hp[o++] = procInfo_for_call & 0xFF;
-			// move.l #UPP,-(sp)
-			hp[o++] = 0x2F; hp[o++] = 0x3C;
-			hp[o++] = (upp_addr >> 24) & 0xFF;
-			hp[o++] = (upp_addr >> 16) & 0xFF;
-			hp[o++] = (upp_addr >> 8) & 0xFF;
-			hp[o++] = upp_addr & 0xFF;
-			// trap $AAFE  — CallUniversalProc
-			hp[o++] = 0xAA; hp[o++] = 0xFE;
-			// move.l (sp)+,d0  — pop result
-			hp[o++] = 0x20; hp[o++] = 0x1F;
-			// rts
-			hp[o++] = 0x4E; hp[o++] = 0x75;
-
-			fprintf(stderr, "68k SCSIAtomic handler at 0x%08x (%d bytes)\n",
-				ROMBase + base + 0x40, o);
-			fprintf(stderr, "  UPP=0x%08x flag=0x%08x\n", upp_addr, flag_addr);
-		}
+		// The Mixed Mode handler (CallUniversalProc) is written to a separate
+		// memory location and installed post-boot by script_hook.cpp.
+		// Write it to scsi_globals+0xF60 (safe area in SCSI globals).
+		// This happens later in this function after scsi_globals is allocated.
 
 		fflush(stderr);
 	}
@@ -2730,24 +2650,37 @@ void InstallDrivers(void)
 		fflush(stderr);
 	}
 
-	// Register trap $ABFF as a MESA SCSI Plug trace handler.
-	// Pure 68k code — emulation ops (0xFExx) don't work in Mixed Mode.
-	// The handler writes the caller's return address to a fixed memory location
-	// (trace_buf). The idle handler polls trace_buf and logs to stderr.
+	// $ABFF trap registration removed — it was overwriting a system trap and crashing boot.
+
+	// Write the Mixed Mode 68k handler for $A089 at scsi_globals+0xF60.
+	// This handler calls CallUniversalProc to transition to PPC for SCSI ops.
+	// Script_hook.cpp writes this address to 0x0624 post-boot.
 	{
-		uint32 trace_buf = scsi_globals + 0xF30;
-		WriteMacInt32(trace_buf, 0);  // clear trace slot
+		uint32 procInfo_for_call = 0x000000F0;  // Pascal, result=long, 1 param=long
+		uint32 tvect = NativeTVECT(NATIVE_SCSI_ACTION);
+		static SheepRoutineDescriptor *scsi_upp = new SheepRoutineDescriptor(procInfo_for_call, tvect);
+		uint32 upp_addr = scsi_upp->addr();
 
-		// Minimal handler: just RTS. Verify the trap mechanism works first.
-		// Toolbox traps push the return address on the stack before calling
-		// the handler, so RTS returns to the instruction after the trap.
-		uint32 h = scsi_globals + 0xF80;
-		WriteMacInt16(h + 0, 0x4E75);    // rts
+		uint32 h = scsi_globals + 0xF60;
+		int o = 0;
+		// subq.l #4,sp  — space for result
+		WriteMacInt8(h + o++, 0x59); WriteMacInt8(h + o++, 0x8F);
+		// move.l a0,-(sp)  — push PB pointer
+		WriteMacInt8(h + o++, 0x2F); WriteMacInt8(h + o++, 0x08);
+		// move.l #procInfo,-(sp)
+		WriteMacInt8(h + o++, 0x2F); WriteMacInt8(h + o++, 0x3C);
+		WriteMacInt32(h + o, procInfo_for_call); o += 4;
+		// move.l #UPP,-(sp)
+		WriteMacInt8(h + o++, 0x2F); WriteMacInt8(h + o++, 0x3C);
+		WriteMacInt32(h + o, upp_addr); o += 4;
+		// trap $AAFE  — CallUniversalProc
+		WriteMacInt8(h + o++, 0xAA); WriteMacInt8(h + o++, 0xFE);
+		// move.l (sp)+,d0  — pop result
+		WriteMacInt8(h + o++, 0x20); WriteMacInt8(h + o++, 0x1F);
+		// rts
+		WriteMacInt8(h + o++, 0x4E); WriteMacInt8(h + o++, 0x75);
 
-		r.d[0] = 0xABFF;
-		r.a[0] = h;
-		Execute68kTrap(0xa647, &r);  // _SetToolTrapAddress
-		fprintf(stderr, "SetToolTrapAddress($ABFF) = 0x%08x, trace_buf = 0x%08x\n", h, trace_buf);
+		fprintf(stderr, "Mixed Mode SCSI handler at 0x%08x (%d bytes), UPP=0x%08x\n", h, o, upp_addr);
 		fflush(stderr);
 	}
 

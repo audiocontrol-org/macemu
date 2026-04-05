@@ -581,9 +581,8 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			r->d[0] = (uint32)-1;
 			PatchNameRegistry();
 			InitCallUniversalProc();
-			// Set flag to enable CallUniversalProc path in SCSI handler
-			WriteMacInt32(0x0F50, 1);
-			fprintf(stderr, "CallUniversalProc ready — SCSI Mixed Mode flag set\n");
+			// Log that CallUniversalProc is ready (for future Mixed Mode SCSI handler)
+			fprintf(stderr, "CallUniversalProc ready\n");
 			fflush(stderr);
 			break;
 
