@@ -686,9 +686,29 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 
 		case OP_SCSI_ATOMIC: {		// SCSIAction/SCSIAtomic replacement (68k callers)
 			uint32 pb = r->a[0];
-			uint32 caller = ReadMacInt32(r->a[7]);  // return address on stack
+			uint8 func = ReadMacInt8(pb + 8);
+			uint8 target = ReadMacInt8(pb + 14);
+			uint32 caller = ReadMacInt32(r->a[7]);
 			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x\n",
-				pb, ReadMacInt8(pb + 8), ReadMacInt8(pb + 14), caller, r->a[4]);
+				pb, func, target, caller, r->a[4]);
+			// For OldCall 0x86 to target 6, dump all 68k registers and stack
+			if (func == 0x86 && target == 6) {
+				fprintf(stderr, "  === OldCall target 6 register dump ===\n");
+				fprintf(stderr, "  d0-d7: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					r->d[0], r->d[1], r->d[2], r->d[3], r->d[4], r->d[5], r->d[6], r->d[7]);
+				fprintf(stderr, "  a0-a7: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					r->a[0], r->a[1], r->a[2], r->a[3], r->a[4], r->a[5], r->a[6], r->a[7]);
+				// Dump stack (a7) area — might have device record pointers
+				fprintf(stderr, "  stack:");
+				for (int i = 0; i < 32; i++)
+					fprintf(stderr, " %02x", ReadMacInt8(r->a[7] + i));
+				fprintf(stderr, "\n");
+				// Dump PB area
+				fprintf(stderr, "  PB[0..63]:");
+				for (int i = 0; i < 64; i++)
+					fprintf(stderr, " %02x", ReadMacInt8(pb + i));
+				fprintf(stderr, "\n");
+			}
 			fflush(stderr);
 			r->d[0] = (uint32)HandleSCSIAction(pb);
 			break;
