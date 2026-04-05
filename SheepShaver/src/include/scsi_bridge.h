@@ -21,7 +21,7 @@
 #ifndef SCSI_BRIDGE_H
 #define SCSI_BRIDGE_H
 
-const int SCSIBridgeRefNum = -49;			// RefNum — replaces .EDisk in unit table
+const int SCSIBridgeRefNum = -50;			// RefNum of .SCSI driver
 const uint16 SCSIBridgeDriverFlags = 0x6f00;	// Driver flags
 
 extern int16 SCSIBridgeOpen(uint32 pb, uint32 dce);
