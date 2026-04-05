@@ -137,6 +137,8 @@ The binary at 0x1014EA0A is the **Mac OS system SCSI driver** (contains ".EDisk"
 | X | Emulation ops (0xFExx) in Plug code | Error type 12 — doesn't work in Mixed Mode 68k context |
 | Y | A-line trap $ABFF for tracing | "SheepShaver Warning ◆P" — PPC emulator intercepts unknown traps. Also crashes boot (overwrites system trap) |
 | Z | Writing handler to OS trap table 0x0624 | Handler NOT reached from Mixed Mode. Marker test: wrote 0xDEADBEEF marker to handler, value stayed 0x00000000 after Find Sampler. Mixed Mode bypasses the OS trap table at 0x0400 |
+| AA | Force scsi43_flag=1 in Plug binary | MESA crashes — $A198 call at 0x071A is required for SCSI init |
+| AB | NOP both flag check and $A198 | MESA crashes during constructor — init functions depend on $A198 having run |
 
 ## MESA II Error Codes
 
