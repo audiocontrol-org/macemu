@@ -334,6 +334,22 @@ void ScriptHookIdle()
 					}
 				}
 				fflush(stderr);
+				// Also dump the scan loop code at 0x109Bxxxx
+				// (frame chain showed return addresses there)
+				const char *extfs2 = PrefsFindString("extfs");
+				if (extfs2) {
+					char path2[512];
+					// Dump 64KB starting at 0x109B0000
+					snprintf(path2, sizeof(path2), "%s/scan_code.bin", extfs2);
+					FILE *df2 = fopen(path2, "wb");
+					if (df2) {
+						uint32 scan_base = 0x109B0000;
+						for (uint32 si = 0; si < 0x10000; si++)
+							fputc(ReadMacInt8(scan_base + si), df2);
+						fclose(df2);
+						fprintf(stderr, "  Dumped 64KB scan code at 0x%08x to %s\n", scan_base, path2);
+					}
+				}
 				hook_log("SCSI Plug base at 0x%08x", plug_base);
 
 					// Dump Plug code to shared folder for offline analysis

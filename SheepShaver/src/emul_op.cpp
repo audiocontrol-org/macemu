@@ -96,9 +96,26 @@ int32 HandleSCSIAction(uint32 pb)
 					uint32 patch_addr = plug_base + 0x115E;
 					uint16 orig = ReadMacInt16(patch_addr);
 					if (orig == 0x7000) {  // moveq #0,d0
-						// DISABLED — returning 4 causes infinite BusInquiry loop.
-						// Need to understand the full scan loop before patching.
-						fprintf(stderr, "*** Plug found at base=0x%08x (patches disabled)\n", plug_base);
+						// Don't patch — just instrument. Write OP_PLUG_TRACE at
+						// key return points to capture actual values.
+						//
+						// Instrument 0x11C6 (function exit): replace the first
+						// word of MOVEM.L restore with OP_PLUG_TRACE, then put
+						// the original word right after. This logs d0 (return value)
+						// and a4 (device record) at every exit from 0x10FC.
+						//
+						// BUT: we learned that OP_PLUG_TRACE replaces instructions
+						// and breaks behavior. Instead, log from HandleSCSIAction
+						// by tracking when the Plug's scan calls us and what the
+						// Plug does between calls.
+						fprintf(stderr, "*** Plug found at base=0x%08x\n", plug_base);
+
+						// Dump the device record area: after the scan completes,
+						// the orchestrator writes to (a4+0x10). We can find device
+						// records by searching for ones with +0x10 set to 1 (found)
+						// and +0x06 low bits = 3 (Processor).
+						// Store plug_base for later use by idle hook.
+						WriteMacInt32(ReadMacInt32(0x0C0C) + 0xFE4, plug_base);
 					} else {
 						fprintf(stderr, "*** Plug+0x115E unexpected: 0x%04x (base=0x%08x)\n", orig, plug_base);
 					}
@@ -724,8 +741,28 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			uint8 func = ReadMacInt8(pb + 8);
 			uint8 target = ReadMacInt8(pb + 14);
 			uint32 caller = ReadMacInt32(r->a[7]);
-			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x\n",
-				pb, func, target, caller, r->a[4]);
+			fprintf(stderr, "SCSIAtomic: pb=0x%08x func=%d target=%d caller=0x%08x a4=0x%08x a3=0x%08x\n",
+				pb, func, target, caller, r->a[4], r->a[3]);
+			// For ExecIO (func=1) to target 6, dump a6 stack frame to find device record
+			if (func == 1 && target == 6) {
+				// a6 is the frame pointer. Scan up the frame chain to find
+				// the orchestrator's frame which has the device record.
+				uint32 frame = r->a[6];
+				fprintf(stderr, "  === ExecIO target 6: frame chain ===\n");
+				for (int fi = 0; fi < 6 && frame > 0x1000 && frame < 0x20000000; fi++) {
+					uint32 saved_a6 = ReadMacInt32(frame);
+					uint32 ret_addr = ReadMacInt32(frame + 4);
+					fprintf(stderr, "  frame[%d] a6=0x%08x ret=0x%08x", fi, frame, ret_addr);
+					// Dump params at frame+8, frame+12, frame+16
+					if (frame + 16 < 0x20000000) {
+						fprintf(stderr, " params: %08x %08x %08x",
+							ReadMacInt32(frame + 8), ReadMacInt32(frame + 12), ReadMacInt32(frame + 16));
+					}
+					fprintf(stderr, "\n");
+					frame = saved_a6;
+				}
+				fflush(stderr);
+			}
 			// For OldCall 0x86 to target 6, dump all 68k registers and stack
 			if (func == 0x86 && target == 6) {
 				fprintf(stderr, "  === OldCall target 6 register dump ===\n");
