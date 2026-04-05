@@ -2734,7 +2734,7 @@ void InstallDrivers(void)
 	// Install ".EDisk" bridge driver at refNum -11
 	{
 		// memcpy done in PatchROM, not here (ROM is read-only by InstallDrivers time)
-		int edisk_refnum = -11;
+		int edisk_refnum = -49;  // Replace .EDisk so Plug's csCode 990 reaches us
 		fprintf(stderr, "step 2: DrvrInstallRsrvMem(%d)\n", edisk_refnum); fflush(stderr);
 		r.a[0] = ROMBase + sony_offset + 0x780;
 		r.d[0] = (uint32)edisk_refnum;
