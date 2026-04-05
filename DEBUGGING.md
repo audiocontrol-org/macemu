@@ -135,7 +135,8 @@ The binary at 0x1014EA0A is the **Mac OS system SCSI driver** (contains ".EDisk"
 | V | d0=1 in $A089 = SCSIAction | d0=1 for ALL OP_SCSI_DISPATCH calls (old SCSI Manager too) — not a discriminator |
 | W | MESA calls Gestalt('scsi') | MESA's Plug checks GetToolTrapAddress($A89F) directly, not Gestalt |
 | X | Emulation ops (0xFExx) in Plug code | Error type 12 — doesn't work in Mixed Mode 68k context |
-| Y | A-line trap $ABFF for tracing | "SheepShaver Warning ◆P" — PPC emulator intercepts unknown traps |
+| Y | A-line trap $ABFF for tracing | "SheepShaver Warning ◆P" — PPC emulator intercepts unknown traps. Also crashes boot (overwrites system trap) |
+| Z | Writing handler to OS trap table 0x0624 | Handler NOT reached from Mixed Mode. Marker test: wrote 0xDEADBEEF marker to handler, value stayed 0x00000000 after Find Sampler. Mixed Mode bypasses the OS trap table at 0x0400 |
 
 ## MESA II Error Codes
 

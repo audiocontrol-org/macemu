@@ -226,6 +226,17 @@ static void process_command_file()
 			send_shutdown_event();
 		}
 		else if (strncmp(line, "FIND_PLUG", 9) == 0) {
+			// Check SCSI handler marker
+			{
+				uint32 sg = ReadMacInt32(0x0C0C);
+				if (sg) {
+					uint32 marker = ReadMacInt32(sg + 0xF58);
+					uint32 handler = ReadMacInt32(0x0624);
+					fprintf(stderr, "SCSI_MARKER: 0x%08x (DEADBEEF=handler reached), 0x0624=0x%08x\n",
+						marker, handler);
+					fflush(stderr);
+				}
+			}
 			// Find MESA's SCSI Plug code in memory by searching for the
 			// Gestalt check pattern: 303C A89F A746 (move.w #$A89F,d0; _GetToolTrapAddress)
 			// This is at file offset 0x6E4. Once found, we know the code base
@@ -336,16 +347,43 @@ void ScriptHookIdle()
 			hook_initialized = true;
 			fprintf(stderr, "BOOT_COMPLETE: Mac OS 9 idle handler active\n");
 
-			// Override 0x0624 ($A089 trap table entry) with our Mixed Mode handler
-			// at scsi_globals+0xF60. Uses CallUniversalProc for 68k→PPC transition.
+			// Install Mixed Mode SCSI handler post-boot.
+			// The boot handler uses emulation ops (only work in native 68k).
+			// This handler uses CallUniversalProc (works in Mixed Mode for MESA).
+			// MESA's constructor already ran (from Startup Items) and failed.
+			// After installing, we need to relaunch MESA for its constructor to re-run.
 			{
 				uint32 sg = ReadMacInt32(0x0C0C);
 				if (sg) {
-					uint32 handler_addr = sg + 0xF60;
-					uint32 old_vector = ReadMacInt32(0x0624);
-					WriteMacInt32(0x0624, handler_addr);
-					fprintf(stderr, "SCSI_FIX: 0x0624 = 0x%08x (was 0x%08x)\n",
-						handler_addr, old_vector);
+					uint32 tvect = NativeTVECT(NATIVE_SCSI_ACTION);
+					static SheepRoutineDescriptor *scsi_upp = new SheepRoutineDescriptor(0x000000F0, tvect);
+					uint32 upp_addr = scsi_upp->addr();
+					uint32 procInfo = 0x000000F0;
+
+				uint32 marker_addr = sg + 0xF58;
+					WriteMacInt32(marker_addr, 0);  // clear marker
+
+					uint32 h = sg + 0xF60;
+					int o = 0;
+					// Write marker to prove handler was reached
+					WriteMacInt16(h + o, 0x23FC); o += 2;  // move.l #imm, abs.l
+					WriteMacInt32(h + o, 0xDEADBEEF); o += 4;  // marker value
+					WriteMacInt32(h + o, marker_addr); o += 4;  // destination address
+					// Original handler code
+					WriteMacInt16(h + o, 0x598F); o += 2;
+					WriteMacInt16(h + o, 0x2F08); o += 2;
+					WriteMacInt16(h + o, 0x2F3C); o += 2;
+					WriteMacInt32(h + o, procInfo); o += 4;
+					WriteMacInt16(h + o, 0x2F3C); o += 2;
+					WriteMacInt32(h + o, upp_addr); o += 4;
+					WriteMacInt16(h + o, 0xAAFE); o += 2;
+					WriteMacInt16(h + o, 0x201F); o += 2;
+					WriteMacInt16(h + o, 0x4E75); o += 2;
+
+					uint32 old = ReadMacInt32(0x0624);
+					WriteMacInt32(0x0624, h);
+					fprintf(stderr, "SCSI_FIX: 0x0624 = 0x%08x (was 0x%08x), UPP=0x%08x\n", h, old, upp_addr);
+					fprintf(stderr, "SCSI_FIX: MESA must be relaunched for Find Sampler to work\n");
 				}
 				fflush(stderr);
 			}

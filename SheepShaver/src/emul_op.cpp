@@ -581,7 +581,6 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			r->d[0] = (uint32)-1;
 			PatchNameRegistry();
 			InitCallUniversalProc();
-			// Log that CallUniversalProc is ready (for future Mixed Mode SCSI handler)
 			fprintf(stderr, "CallUniversalProc ready\n");
 			fflush(stderr);
 			break;
