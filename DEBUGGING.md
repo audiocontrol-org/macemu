@@ -97,7 +97,24 @@ Additionally, `rom_patches.cpp:1405` disables virtual→physical address transla
 
 **The fix:** Restore the original ROM code that activates the 68k exception table. This may require making the emulation op handlers compatible with exception-based dispatch, or conditionally enabling the table only for Mixed Mode callers.
 
-**Current test:** Removing the patch at line 1469 causes boot failure (black screen). The exception table activation conflicts with SheepShaver's emulation. Need a conditional approach.
+**Tests and results:**
+- Removing the patch at line 1469 causes boot failure (black screen)
+- Patching the per-opcode table (ROMBase+0x480000) with POWERPC_EMUL_OP for $A089: entry written and verified via readback, but NOT reached. The ROM's 68k emulator has a separate **A-line fast path** that bypasses the per-opcode table entirely for opcodes 0xA000-0xAFFF.
+- The A-line fast path goes through the exception table at `r1+0x360`, which SheepShaver disabled.
+- The per-opcode table entries for A-line opcodes (`807F0720 4BF9xxxx`) exist but are apparently never used — the fast path intercepts A-line opcodes before the table dispatch.
+
+**Next steps:**
+1. Find the A-line fast path in the ROM's 68k emulator (PPC code in the 0x310000-0x314000 range)
+2. Patch the fast path to dispatch through the per-opcode table (where our EMUL_OP entry is) instead of the disabled exception table
+3. Or: patch the fast path to call HandleSCSIAction directly for $A089
+
+**Key addresses:**
+- Opcode table pointer: `KernelData+0x1074 = 0x68FFF074` → 0x50480000
+- $A089 entry (signed offset): `0x50480000 + (int16)0xA089 * 8 = 0x50450448`
+- A-line handler (from table entry for $A055): branches to `0x50369660`
+- ROM 68k emulator area: `0x50310000-0x50314000`
+- 68k exception table patch: `rom_patches.cpp:1469` (pattern `m68k_excp_tbl_dat`)
+- Virtual→physical translation patch: `rom_patches.cpp:1405` (pattern `virt2phys_dat`)
 
 ### Previous analysis (system SCSI driver — NOT MESA's Plug)
 
@@ -153,7 +170,12 @@ The binary at 0x1014EA0A is the **Mac OS system SCSI driver** (contains ".EDisk"
 | AD | JSR to PPC stub from Plug | PPC instructions crash 68k interpreter — 68k can't execute PPC code |
 | AE | Replace $A089 with $A89F in Plug | Same result — Mixed Mode doesn't use OS trap table for ANY A-line trap |
 | AF | PPC stub at 0x0624 during ROM init | Crashes boot — 68k callers during boot DO use 0x0624 and can't execute PPC |
-| AG | Restore 68k exception table (remove rom_patches.cpp:1469 patch) | **TESTING** — black screen, OS doesn't boot |
+| AG | Restore 68k exception table (remove rom_patches.cpp:1469 patch) | Black screen, OS doesn't boot — exception table conflicts with emulation ops |
+| AH | Patch opcode table at wrong address (ROM+0x380000) | Entry patched but not reached — opcode table is in RAM at 0x50480000, not ROM |
+| AI | Patch opcode table at correct RAM address (0x50450448) | WriteMacInt32 works (readback confirmed 0x1800002D) but entry still not reached — ROM 68k emulator has separate A-line fast path |
+| AJ | $A089→$A89F in Plug binary | Same result — Mixed Mode doesn't dispatch ANY A-line trap through OS trap table |
+| AK | JSR to emul op handler from Plug | Emulation op not recognized by Mixed Mode 68k interpreter |
+| AL | JSR to PPC stub from Plug | PPC instructions crash 68k interpreter |
 
 ## MESA II Error Codes
 
