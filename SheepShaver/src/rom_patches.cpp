@@ -2257,11 +2257,26 @@ static bool patch_68k(void)
 		// Actually: let me use procInfo=0 and pass a0 directly via the stack.
 		// The PPC native op reads from r3 which gets the first stack param.
 
-		// Write emulation op handler to 0x0624 (SCSIAtomic trap table entry).
-		// Boot 68k callers need this. Post-boot, 0x0624 gets overwritten anyway.
-		*wp++ = htons(0x21fc);			// move.l	#(base+18),0x624
-		*wp++ = htons((ROMBase + base + 18) >> 16);
-		*wp++ = htons((ROMBase + base + 18) & 0xffff);
+		// Write 68k CallUniversalProc handler address to 0x0624.
+		// The ROM's A-line dispatcher reads this and executes it as 68K CODE.
+		// Boot Execute68k callers use the opcode table (0x480000), not 0x0624.
+		// Only Mixed Mode callers (MESA's Plug) use the A-line dispatch → 0x0624.
+		// By post-boot time, CallUniversalProc ($AAFE) is available.
+		//
+		// Handler at base+0x40 (68k code):
+		//   subq.l  #4,sp          ; space for result
+		//   move.l  a0,-(sp)       ; push PB pointer
+		//   move.l  #procInfo,-(sp)
+		//   move.l  #UPP,-(sp)
+		//   dc.w    $AAFE          ; CallUniversalProc
+		//   move.l  (sp)+,d0       ; pop result
+		//   rts
+		//
+		// The UPP and procInfo are filled in by InitCallUniversalProc handler
+		// (OP_NAME_REGISTRY) which runs BEFORE Startup Items.
+		*wp++ = htons(0x21fc);			// move.l	#(base+0x40),0x624
+		*wp++ = htons((ROMBase + base + 0x40) >> 16);
+		*wp++ = htons((ROMBase + base + 0x40) & 0xffff);
 		*wp++ = htons(0x0624);
 		*wp++ = htons(0x21fc);			// move.l	#(base+22),0xe54
 		*wp++ = htons((ROMBase + base + 22) >> 16);
@@ -2276,11 +2291,27 @@ static bool patch_68k(void)
 		*wp++ = htons(0x7000);			// moveq	#0,d0
 		*wp = htons(M68K_RTS);
 
-		// The Mixed Mode handler (CallUniversalProc) is written to a separate
-		// memory location and installed post-boot by script_hook.cpp.
-		// Write it to scsi_globals+0xF60 (safe area in SCSI globals).
-		// This happens later in this function after scsi_globals is allocated.
-
+		// Write 68k CallUniversalProc handler at base+0x40.
+		// procInfo (at base+0x46) and UPP addr (at base+0x4C) are zero now.
+		// They get filled in by OP_NAME_REGISTRY (after InitCallUniversalProc).
+		{
+			uint8 *hp = ROMBaseHost + base + 0x40;
+			int o = 0;
+			hp[o++] = 0x59; hp[o++] = 0x8F;  // subq.l #4,sp (result space)
+			hp[o++] = 0x2F; hp[o++] = 0x08;  // move.l a0,-(sp) (PB pointer)
+			hp[o++] = 0x2F; hp[o++] = 0x3C;  // move.l #procInfo,-(sp)
+			hp[o++] = 0x00; hp[o++] = 0x00;  // procInfo high (placeholder)
+			hp[o++] = 0x00; hp[o++] = 0xF0;  // procInfo low = 0x000000F0
+			hp[o++] = 0x2F; hp[o++] = 0x3C;  // move.l #UPP,-(sp)
+			hp[o++] = 0x00; hp[o++] = 0x00;  // UPP high (placeholder - filled by OP_NAME_REGISTRY)
+			hp[o++] = 0x00; hp[o++] = 0x00;  // UPP low (placeholder)
+			hp[o++] = 0xAA; hp[o++] = 0xFE;  // dc.w $AAFE (CallUniversalProc)
+			hp[o++] = 0x20; hp[o++] = 0x1F;  // move.l (sp)+,d0 (pop result)
+			hp[o++] = 0x4E; hp[o++] = 0x75;  // rts
+			fprintf(stderr, "68k SCSI handler at ROM+0x%x (%d bytes), UPP placeholder at +0x4C\n",
+				(uint32)(base + 0x40), o);
+			// UPP address filled in by OP_NAME_REGISTRY (reads 0x0624 to find handler).
+		}
 		fflush(stderr);
 	}
 

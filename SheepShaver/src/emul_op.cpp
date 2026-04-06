@@ -581,6 +581,31 @@ void EmulOp(M68kRegisters *r, uint32 pc, int selector)
 			r->d[0] = (uint32)-1;
 			PatchNameRegistry();
 			InitCallUniversalProc();
+			// Install 68k SCSI handler at 0x0624 and fill in UPP.
+			// 0x0624 gets overwritten by boot code, so we re-install here.
+			// The handler 68k code is at a fixed ROM offset (base+0x40 from PatchROM).
+			// We find it by searching for the signature: 598F 2F08 2F3C 0000 00F0
+			{
+				// Search ROM for our handler signature
+				uint32 handler = 0;
+				for (uint32 a = ROMBase + 0x20000; a < ROMBase + 0x30000; a += 2) {
+					if (ReadMacInt16(a) == 0x598F && ReadMacInt16(a+2) == 0x2F08 &&
+						ReadMacInt16(a+4) == 0x2F3C && ReadMacInt32(a+6) == 0x000000F0) {
+						handler = a;
+						break;
+					}
+				}
+				if (handler) {
+					uint32 tvect = NativeTVECT(NATIVE_SCSI_ACTION);
+					static SheepRoutineDescriptor *scsi_upp = new SheepRoutineDescriptor(0x000000F0, tvect);
+					uint32 upp_addr = scsi_upp->addr();
+					uint32 upp_slot = handler + 0x0C;  // offset of UPP immediate in handler
+					WriteMacInt32(upp_slot, upp_addr);
+					WriteMacInt32(0x0624, handler);
+					fprintf(stderr, "SCSI_FIX: 0x0624=0x%08x, UPP=0x%08x\n", handler, upp_addr);
+					fflush(stderr);
+				}
+			}
 			break;
 
 		case OP_RESET:				// Early in MacOS reset
