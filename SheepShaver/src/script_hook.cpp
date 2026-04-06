@@ -291,9 +291,22 @@ static void process_command_file()
 					fprintf(stderr, "OPCODE_TABLE ($A055): %08x %08x\n",
 						ReadMacInt32(table + 0xA055 * 8),
 						ReadMacInt32(table + 0xA055 * 8 + 4));
-					// Read the actual opcode table pointer from kernel data
+					// Read the actual opcode table pointer and emulator address from kernel data
 					uint32 opcode_table_ptr = ReadMacInt32(0x68FFF074);
-					fprintf(stderr, "OPCODE_TABLE_PTR: 0x%08x (from KernelData+0x1074)\n", opcode_table_ptr);
+					uint32 emulator_addr = ReadMacInt32(0x68FFF078);
+					fprintf(stderr, "OPCODE_TABLE_PTR: 0x%08x, EMULATOR: 0x%08x\n",
+						opcode_table_ptr, emulator_addr);
+					// Dump the emulator code before the dispatch loop
+					// The main emulator loop fetches opcode, compares, dispatches
+					uint32 dispatch = emulator_addr + 0x5F40;
+					// Look BACKWARDS from the dispatch for the opcode fetch
+					fprintf(stderr, "EMULATOR PRE-DISPATCH (0x5E00-0x5F80):\n");
+					for (uint32 off = 0x5E00; off < 0x5F80; off += 16) {
+						fprintf(stderr, "  +%04x:", off);
+						for (int col = 0; col < 16; col += 4)
+							fprintf(stderr, " %08x", ReadMacInt32(emulator_addr + off + col));
+						fprintf(stderr, "\n");
+					}
 					// The opcode is sign-extended int16. $A089 = -24439.
 					// Entry = table_ptr + (-24439 * 8)
 					int16 opcode_signed = (int16)0xA089;
@@ -428,36 +441,13 @@ void ScriptHookIdle()
 			hook_initialized = true;
 			fprintf(stderr, "BOOT_COMPLETE: Mac OS 9 idle handler active\n");
 
-			// Patch $A089 in the opcode table (RAM, not ROM).
-			// The table is at the address in KERNEL_DATA_BASE+0x1074.
-			// This makes the ROM's 68k emulator call our SCSI handler for $A089,
-			// which works from BOTH native 68k AND Mixed Mode.
+			// Verify $A089 opcode table patch (applied during ROM init)
 			{
 				uint32 table_ptr = ReadMacInt32(0x68FFF074);
 				if (table_ptr) {
-					int16 opcode = (int16)0xA089;
-					uint32 entry = table_ptr + opcode * 8;
-					uint32 old0 = ReadMacInt32(entry);
-					uint32 old1 = ReadMacInt32(entry + 4);
-					// Write POWERPC_EMUL_OP for OP_SCSI_ATOMIC (selector 42+3=45)
-					fprintf(stderr, "SCSI_FIX: writing to entry 0x%08x...\n", entry);
-					fflush(stderr);
-					WriteMacInt32(entry, 0x18000000 | 45);
-					uint32 readback = ReadMacInt32(entry);
-					fprintf(stderr, "SCSI_FIX: readback = 0x%08x (expected 0x%08x)\n",
-						readback, 0x18000000 | 45);
-					fflush(stderr);
-					// Copy branch from a working A-line entry ($A055), adjusting offset
-					int16 ref_opcode = (int16)0xA055;
-					uint32 ref_entry = table_ptr + ref_opcode * 8;
-					uint32 ref_branch = ReadMacInt32(ref_entry + 4);
-					int32 ref_rel = (int32)(ref_branch & 0x03FFFFFC);
-					if (ref_rel & 0x02000000) ref_rel |= (int32)0xFC000000;
-					uint32 target = (ref_entry + 4) + ref_rel;
-					int32 our_rel = (int32)(target - (entry + 4));
-					WriteMacInt32(entry + 4, 0x48000000 | (our_rel & 0x03FFFFFC));
-					fprintf(stderr, "SCSI_FIX: $A089 opcode table at 0x%08x (was %08x %08x) → EMUL_OP + b 0x%08x\n",
-						entry, old0, old1, target);
+					uint32 entry = table_ptr + (uint32)0xA089 * 8;
+					fprintf(stderr, "SCSI_VERIFY: $A089 at 0x%08x = %08x %08x\n",
+						entry, ReadMacInt32(entry), ReadMacInt32(entry + 4));
 				}
 				fflush(stderr);
 			}

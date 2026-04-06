@@ -1190,24 +1190,63 @@ static bool patch_68k_emul(void)
 		*lp++ = htonl(0x4bf66e68 - i*8);				// b	0x366084
 	}
 
-	// Patch $A089 opcode table entry to call OP_SCSI_ATOMIC directly.
-	// The opcode table pointer is at KERNEL_DATA_BASE + 0x1074.
-	// Opcodes are sign-extended int16, so $A089 = -24439, entry at ptr + (-24439*8).
-	// The table is at ROMBase + 0x480000 (NOT 0x380000 — that's a different table).
+	// Patch A-line opcode table entries in BOTH ROM tables.
+	// The 68k emulator's opcode table at ROMBase+0x480000 (runtime) and
+	// ROMBase+0x380000 (ROM copy) dispatch A-line traps. SheepShaver's
+	// emulation ops are installed for 0xFExx opcodes but NOT for A-line.
+	// MESA's 68k SCSI Plug calls $A089, $A746, $A346, $A198 from Mixed Mode.
+	// Without patched entries, these A-line traps don't reach any handler.
+	//
+	// We install POWERPC_EMUL_OP for $A089 (OP_SCSI_ATOMIC) to handle
+	// SCSI calls. For GetToolTrapAddress ($A746), GetOSTrapAddress ($A346),
+	// and _Unimplemented ($A198), we need them to work correctly so MESA's
+	// scsi43_flag check passes. These traps are handled by the ROM's
+	// native trap dispatcher — we just need the opcode table to dispatch
+	// to the correct ROM A-line handler instead of being empty/wrong.
+	//
+	// Strategy: copy the existing A-line handler entry from a known working
+	// opcode ($A055 = _StripAddress) to all A-line opcodes that need fixing.
+	// For $A089 specifically, use our EMUL_OP instead.
 	{
-		// Read the opcode table pointer (set during ROM init)
-		uint32 table_ptr_offset = 0x480000;  // from runtime observation
-		int16 opcode = (int16)0xA089;
-		uint32 entry_offset = table_ptr_offset + opcode * 8;
-		uint32 *ap = (uint32 *)(ROMBaseHost + entry_offset);
-		// Calculate branch to emulator resume at 0x366084
-		int32 branch_target = 0x366084;
-		int32 branch_from = entry_offset + 4;
-		int32 rel = branch_target - branch_from;
-		ap[0] = htonl(POWERPC_EMUL_OP | (OP_SCSI_ATOMIC + 3));
-		ap[1] = htonl(0x48000000 | (rel & 0x03FFFFFC));
-		fprintf(stderr, "Patched $A089 opcode table at ROM+0x%x: EMUL_OP + branch to 0x%x\n",
-			entry_offset, branch_target);
+		uint32 tables[] = {0x380000, 0x480000};
+		for (int t = 0; t < 2; t++) {
+			uint32 tbl = tables[t];
+			// Get the working A-line handler entry from $A055
+			uint32 ref_offset = tbl + (uint32)0xA055 * 8;
+			uint32 ref0 = ntohl(*(uint32 *)(ROMBaseHost + ref_offset));
+			uint32 ref1 = ntohl(*(uint32 *)(ROMBaseHost + ref_offset + 4));
+
+			// Patch $A089 with our EMUL_OP
+			{
+				uint32 entry_offset = tbl + (uint32)0xA089 * 8;
+				uint32 *ap = (uint32 *)(ROMBaseHost + entry_offset);
+				int32 rel = 0x366084 - (entry_offset + 4);
+				ap[0] = htonl(POWERPC_EMUL_OP | (OP_SCSI_ATOMIC + 3));
+				ap[1] = htonl(0x48000000 | (rel & 0x03FFFFFC));
+				fprintf(stderr, "Patched $A089 at ROM+0x%x: EMUL_OP\n", entry_offset);
+			}
+
+			// Copy $A055's handler entry to other A-line opcodes that MESA needs
+			uint16 fix_opcodes[] = {0xA746, 0xA346, 0xA198, 0xA89F, 0xA3AD, 0xA5AD, 0xA647};
+			for (int i = 0; i < 7; i++) {
+				uint32 entry_offset = tbl + (uint32)fix_opcodes[i] * 8;
+				uint32 *ap = (uint32 *)(ROMBaseHost + entry_offset);
+				uint32 old0 = ntohl(ap[0]);
+				if (old0 == 0) {
+					// Entry is empty — copy from reference
+					// Adjust branch offset: ref branch goes from ref_offset+4 to target
+					// Our entry goes from entry_offset+4 to the same target
+					int32 ref_rel = (int32)(ref1 & 0x03FFFFFC);
+					if (ref_rel & 0x02000000) ref_rel |= (int32)0xFC000000;
+					uint32 target = (ref_offset + 4) + ref_rel;
+					int32 our_rel = (int32)(target - (entry_offset + 4));
+					ap[0] = htonl(ref0);
+					ap[1] = htonl(0x48000000 | (our_rel & 0x03FFFFFC));
+					fprintf(stderr, "Patched $%04X at ROM+0x%x: copied A-line handler\n",
+						fix_opcodes[i], entry_offset);
+				}
+			}
+		}
 	}
 #else
 	// Install EMUL_RETURN, EXEC_RETURN and EMUL_OP opcodes
